@@ -40,17 +40,57 @@ What you get when you finish the steps below:
 
 | Requirement | Notes |
 | --- | --- |
-| Azure subscription Owner / Contributor | RG, networking, AI Services, PE, DNS, Enterprise Policy |
-| Azure CLI ≥ `2.50` | only required for the scripted path |
-| PowerShell 7+ (`pwsh`) | for the helper scripts |
-| `pac` CLI signed in to the target PP environment | `pac auth list` |
-| `Microsoft.PowerPlatform.EnterprisePolicies` PowerShell module | auto-installed by `link-enterprise-policy.ps1` |
-| Power Platform / Global Administrator | required to enable Managed Environment + link the policy |
-| Target environment is a **Managed Environment** | Sandbox is not allowed; enable in PPAC |
+| [Azure subscription](https://azure.microsoft.com/free/) Owner / Contributor | RG, networking, AI Services, PE, DNS, Enterprise Policy |
+| [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) ≥ `2.50` | only required for the scripted path |
+| [PowerShell 7+](https://learn.microsoft.com/powershell/scripting/install/installing-powershell) (`pwsh`) | for the helper scripts |
+| [`pac` CLI](https://learn.microsoft.com/power-platform/developer/cli/introduction#install-microsoft-power-platform-cli) signed in to the target PP environment | `pac auth list` |
+| [`Microsoft.PowerPlatform.EnterprisePolicies` PowerShell module](https://www.powershellgallery.com/packages/Microsoft.PowerPlatform.EnterprisePolicies) | auto-installed by `link-enterprise-policy.ps1` |
+| [Power Platform / Global Administrator](https://learn.microsoft.com/power-platform/admin/use-service-admin-role-manage-tenant) | required to enable Managed Environment + link the policy |
+| Target environment is a [**Managed Environment**](https://learn.microsoft.com/power-platform/admin/managed-environment-overview) | Sandbox is not allowed; enable in PPAC |
 
 ### Deployment
 
-You have two options. Pick **one** of them, then continue with the linking step.
+#### Step 1 — Clone the repository
+
+All scripts and the `.env.example` file live under
+`accelerators/private-endpoint/`. Clone the repo and `cd` into that folder
+before running any of the steps below.
+
+```powershell
+git clone https://github.com/gokseloral/Copilot-Studio-and-Azure.git
+cd Copilot-Studio-and-Azure/accelerators/private-endpoint
+```
+
+#### Step 2 — Copy `.env.example` to `.env` and fill in your values
+
+Both deployment paths read defaults from `.env` (the scripted path requires it;
+the ARM path uses it as a convenient place to store your `ResourceGroup`,
+`PowerPlatformEnvId`, etc. for the follow-up linking and connector scripts).
+
+```powershell
+Copy-Item .env.example .env
+# then edit .env in your editor
+```
+
+Update at minimum:
+
+| Variable | What to put here |
+| --- | --- |
+| `AZURE_SUBSCRIPTION_ID` | GUID of the Azure subscription you'll deploy into |
+| `AZURE_RESOURCE_GROUP`  | Resource group name (created if it doesn't exist) |
+| `AZURE_LOCATION`        | Primary Azure region — must match the primary region for your chosen `PP_GEO` (see the region-mapping table below) |
+| `AZURE_SECONDARY_LOCATION` | Paired secondary Azure region for the second PP-delegated subnet (leave blank for `singapore` / `sweden`) |
+| `BASE_NAME`             | 3–11 chars, lowercase alphanumerics; used to derive resource names |
+| `PP_TENANT_ID`          | Microsoft Entra tenant ID hosting the PP environment |
+| `PP_ENVIRONMENT_ID`     | Power Platform environment GUID (PPAC → Environments → your env → *Environment ID*, or `pac admin list`). NOT the org URL. |
+| `PP_GEO`                | Power Platform region (e.g. `unitedstates`, `europe`, `unitedkingdom`, `japan`, `australia`, `asia`, `singapore`, `sweden`) |
+| `ENTERPRISE_POLICY_NAME` | Name to give the `Microsoft.PowerPlatform/enterprisePolicies` resource |
+
+`.env` is gitignored; `.env.example` is the only file checked in.
+
+#### Step 3 — Provision the infrastructure
+
+You have two options to provision the azure infrastructure. Pick **one** of them, then continue with the linking step.
 
 #### Option A — One-click ARM deploy (recommended)
 
@@ -89,69 +129,78 @@ session — you don't need to enter them.
 #### Option B — Scripted (`.env` + PowerShell)
 
 ```powershell
-# 1. Copy .env.example -> .env and fill in the values for your tenant
-Copy-Item .env.example .env
-# edit .env (PP_ENVIRONMENT_ID, PP_TENANT_ID, AZURE_SUBSCRIPTION_ID, ...)
-
-# 2. Provision Azure infra + Enterprise Policy
+# Provision Azure infra + Enterprise Policy using values from .env
 ./scripts/deploy.ps1
 ```
-
-`.env` is gitignored; `.env.example` is the only file checked in.
 
 #### Final step — link the Enterprise Policy to your PP environment
 
 The ARM template (and the scripted path) stops at provisioning. Linking the
 policy to the Power Platform environment requires Power Platform admin auth
-that ARM cannot perform, so it runs locally:
+that ARM cannot perform, so it runs locally.
+
+**If you deployed via the one-click ARM template** (no `.env`):
 
 ```powershell
-# Make sure .env has PP_ENVIRONMENT_ID and PP_TENANT_ID set
+./scripts/link-enterprise-policy.ps1 `
+    -ResourceGroup       <your-rg-name> `
+    -PowerPlatformEnvId  <pp-environment-guid> `
+    -UseDeviceCode
+```
+
+The script discovers the Enterprise Policy ARM ID from the resource group and
+resolves the tenant from your `az login` context.
+
+**If you deployed via the scripted (`.env`) path**:
+
+```powershell
+# .env already has PP_ENVIRONMENT_ID and PP_TENANT_ID set
 ./scripts/link-enterprise-policy.ps1 -UseDeviceCode
 ```
 
 To unlink later (e.g. before changing the policy's subnets):
 
 ```powershell
-./scripts/link-enterprise-policy.ps1 -Unlink
+./scripts/link-enterprise-policy.ps1 -Unlink -PowerPlatformEnvId <pp-environment-guid>
 ```
 
 ## Testing
 
-### 1. Push the custom connector + run the connectivity check
+### 1. Sign `pac` in to the target Power Platform environment
+
+The custom-connector push uses `pac connector create`, which needs an
+authenticated `pac` profile pointing at the environment you want the connector
+created in.
 
 ```powershell
-./scripts/create-and-test-connector.ps1
+pac auth create --environment <environmentName>
 ```
 
-The script calls `GET /contentunderstanding/analyzers?api-version=<preview>`
-directly against the AI Services endpoint and reports the result:
+`<environmentName>` can be the environment display name, the GUID, or the org
+URL. Verify with `pac auth list` — the `*` marker should be on the row for the
+target environment.
+
+### 2. Push the custom connector + run the connectivity check
+
+```powershell
+./scripts/create-and-test-connector.ps1 -ResourceGroup <your-rg-name>
+```
+
+The script resolves the deployed AI Services account from the resource group
+(or from `scripts/deployment-outputs.json` if you used the scripted path),
+patches the swagger `host`, pushes the connector via `pac`, and then calls
+`GET /contentunderstanding/analyzers?api-version=<preview>` directly against
+the AI Services endpoint:
 
 | Run from | Expected | Meaning |
 | --- | --- | --- |
 | Your laptop (public internet) | `403 Public access is disabled` | ✅ lockdown is working |
 | VM inside `snet-pe` (use `-InsideVnetTest`) | `200 OK` | ✅ private endpoint + DNS working |
-| Power Automate flow in linked env | `200 OK` | ✅ end-to-end PP → PE working |
+| Power Automate flow in linked env | `200 OK` | ✅ end-to-end PP → PE working (validated in step 3) |
 
 > The "Test operation" button in the **custom connector designer** routes
 > through the connector authoring host (`*.azure-apihub.net`) and **does not
-> use VNet injection**. Always validate from a real flow run.
-
-### 2. Verify the Enterprise Policy link
-
-```powershell
-. ./scripts/load-env.ps1
-$tok = az account get-access-token --resource 'https://service.powerapps.com/' --query accessToken -o tsv
-$uri = "https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/scopes/admin/environments/$env:PP_ENVIRONMENT_ID" + '?api-version=2019-10-01&$expand=properties.enterprisePolicies'
-Invoke-RestMethod -Uri $uri -Headers @{ Authorization = "Bearer $tok" } |
-  Select-Object -ExpandProperty properties |
-  Select-Object -ExpandProperty enterprisePolicies |
-  ConvertTo-Json -Depth 10
-```
-![PowerShell response to check the status of the Enterprise Policy Link](image-2.png)
-Look for `"linkStatus": "Linked"` inside the `vNets` object — that confirms
-the policy is bound to the environment. (PowerShell's default table view
-truncates this nested field, so we pipe to `ConvertTo-Json` to see it in full.)
+> use VNet injection**. Always validate from a real flow run (step 3).
 
 ### 3. End-to-end test from a Power Automate flow
 
@@ -162,10 +211,37 @@ truncates this nested field, so we pipe to `ConvertTo-Json` to see it in full.)
 
 ![Testing connectivity to Azure Content Understanding service via custom connector action used in PowerAutomate flow](image-3.png)
 
+You can also test the connectivity from Copilot Studio > Tools and search for the connector name
+
+![Listing actions of the connector from Copilot Studio Agent Tools](image-4.png)
+
+### Verify the Enterprise Policy link (optional)
+
+```powershell
+$envId = '<pp-environment-guid>'   # or use $env:PP_ENVIRONMENT_ID if you used the scripted path
+$tok   = az account get-access-token --resource 'https://service.powerapps.com/' --query accessToken -o tsv
+$uri   = "https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/scopes/admin/environments/$envId" + '?api-version=2019-10-01&$expand=properties.enterprisePolicies'
+$ppEnv = Invoke-RestMethod -Uri $uri -Headers @{ Authorization = "Bearer $tok" }
+
+if (-not $ppEnv.properties.PSObject.Properties['enterprisePolicies']) {
+  Write-Warning "No Enterprise Policy is linked to this environment. Run scripts/link-enterprise-policy.ps1 first."
+} else {
+  $ppEnv.properties.enterprisePolicies | ConvertTo-Json -Depth 10
+}
+```
+![PowerShell response to check the status of the Enterprise Policy Link](image-2.png)
+Look for `"linkStatus": "Linked"` inside the `vNets` object — that confirms
+the policy is bound to the environment. If the script prints the warning
+instead, no policy is linked yet (and any Power Automate call will return
+`403 Public access is disabled`); run the link step in section [Final step
+— link the Enterprise Policy to your PP environment](#final-step--link-the-enterprise-policy-to-your-pp-environment) and retry.
+
 ### Troubleshooting
 
 | Symptom | Likely cause / fix |
 | --- | --- |
+| Power Automate flow returns `403 Public access is disabled. Please configure private endpoint.` | The Enterprise Policy is **not linked** to the PP environment yet. Verify with the snippet above (the `enterprisePolicies` property will be missing on the env). Run `scripts/link-enterprise-policy.ps1 -ResourceGroup <rg> -PowerPlatformEnvId <env-guid> -UseDeviceCode`, then delete + recreate the connection in Power Apps and retry the flow. |
+| `Select-Object : Property "enterprisePolicies" cannot be found.` | Same root cause as the row above — the env has no policy linked, so the API doesn't return the property. Use the hardened verify snippet above (it checks for the property before expanding it) and link the policy. |
 | `404` from `enterprisePolicies/vnet/link` | Environment is not a Managed Environment yet. Enable it in PPAC, then re-run. |
 | `Environment location 'unitedstates' does not match the enterprise policy location 'westus'` | The Enterprise Policy resource's `location` must be the PP geo (`unitedstates`), not an Azure region. The provided template handles this; redeploy if you set it manually. |
 | `EnterprisePolicyUpdateNotAllowed` when redeploying the policy | Policy is currently linked to an environment. Run `link-enterprise-policy.ps1 -Unlink`, redeploy, then re-link. |

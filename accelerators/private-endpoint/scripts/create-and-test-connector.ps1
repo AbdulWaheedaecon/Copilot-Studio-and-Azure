@@ -5,7 +5,13 @@
   unit test against the deployed AI Services account.
 
 .DESCRIPTION
-  - Reads scripts/deployment-outputs.json (produced by deploy.ps1).
+  - Resolves the deployed AI Services account in one of two ways:
+      1. Reads scripts/deployment-outputs.json (produced by deploy.ps1), or
+      2. Falls back to ARM deployment discovery: pass -ResourceGroup
+         (and optionally -SubscriptionId / -DeploymentName) when you deployed
+         via the one-click ARM template / Deploy-to-Azure button. The script
+         reads outputs from the latest succeeded deployment in the RG, and if
+         outputs are missing, finds the AIServices account in the RG.
   - Patches the swagger `host` with the actual AI Services hostname.
   - Pushes the connector via `pac connector create`.
   - Invokes the connector's ListAnalyzers operation directly against the
@@ -22,6 +28,9 @@
 [CmdletBinding()]
 param(
   [string] $OutputsFile = (Join-Path $PSScriptRoot 'deployment-outputs.json'),
+  [string] $ResourceGroup,
+  [string] $SubscriptionId,
+  [string] $DeploymentName,
   [string] $ConnectorDisplayName = 'Azure Content Understanding (Private)',
   [switch] $SkipConnectorCreate,
   [switch] $InsideVnetTest
@@ -29,16 +38,61 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-if (-not (Test-Path $OutputsFile)) {
-  throw "Outputs file '$OutputsFile' not found. Run scripts/deploy.ps1 first."
-}
-$out = Get-Content $OutputsFile | ConvertFrom-Json
+if (Test-Path $OutputsFile) {
+  $out = Get-Content $OutputsFile | ConvertFrom-Json
+  $aiName     = $out.aiAccountName
+  $aiEndpoint = $out.aiAccountEndpoint
+  $rg         = $out.resourceGroup
+  $subId      = $out.subscriptionId
+} else {
+  Write-Host "Outputs file '$OutputsFile' not found - falling back to ARM deployment discovery." -ForegroundColor Yellow
 
-$aiName     = $out.aiAccountName
-$aiEndpoint = $out.aiAccountEndpoint   # e.g. https://ais-xxx.cognitiveservices.azure.com/
-$rg         = $out.resourceGroup
-$subId      = $out.subscriptionId
-$hostname   = ([Uri]$aiEndpoint).Host
+  if (-not $ResourceGroup)   { $ResourceGroup   = Read-Host 'Resource group name (where the ARM template was deployed)' }
+  if (-not $SubscriptionId)  { $SubscriptionId  = az account show --query id -o tsv }
+  if (-not $SubscriptionId)  { throw 'Could not resolve subscription. Run `az login` or pass -SubscriptionId.' }
+
+  Write-Host "==> Using subscription $SubscriptionId" -ForegroundColor Cyan
+  az account set --subscription $SubscriptionId | Out-Null
+
+  # Try to read outputs from the deployment (fast, exact).
+  $aiName = $null; $aiEndpoint = $null
+  if (-not $DeploymentName) {
+    $DeploymentName = az deployment group list -g $ResourceGroup `
+        --query "sort_by([?properties.provisioningState=='Succeeded'], &properties.timestamp)[-1].name" -o tsv 2>$null
+  }
+  if ($DeploymentName) {
+    Write-Host "==> Reading outputs from deployment '$DeploymentName'" -ForegroundColor Cyan
+    $depJson = az deployment group show -g $ResourceGroup -n $DeploymentName --query 'properties.outputs' -o json 2>$null
+    if ($LASTEXITCODE -eq 0 -and $depJson -and $depJson -ne 'null') {
+      $dep = $depJson | ConvertFrom-Json
+      if ($dep.aiAccountName)     { $aiName     = $dep.aiAccountName.value }
+      if ($dep.aiAccountEndpoint) { $aiEndpoint = $dep.aiAccountEndpoint.value }
+    }
+  }
+
+  # Fallback: query the RG directly for the AI Services account.
+  if (-not $aiName) {
+    Write-Host "==> Discovering AIServices account in resource group $ResourceGroup" -ForegroundColor Cyan
+    $accounts = az cognitiveservices account list -g $ResourceGroup --query "[?kind=='AIServices'].{name:name, endpoint:properties.endpoint}" -o json | ConvertFrom-Json
+    if (-not $accounts -or $accounts.Count -eq 0) {
+      throw "No 'AIServices' account found in resource group '$ResourceGroup'. Verify the deployment finished and -ResourceGroup is correct."
+    }
+    if ($accounts.Count -gt 1) {
+      throw "Multiple AIServices accounts found in '$ResourceGroup': $(( $accounts | ForEach-Object { $_.name }) -join ', '). Re-run with -OutputsFile or narrow the resource group."
+    }
+    $aiName     = $accounts[0].name
+    $aiEndpoint = $accounts[0].endpoint
+  }
+
+  $rg    = $ResourceGroup
+  $subId = $SubscriptionId
+}
+
+if (-not $aiName -or -not $aiEndpoint) {
+  throw 'Could not resolve AI Services account name/endpoint from outputs file or ARM deployment discovery.'
+}
+
+$hostname = ([Uri]$aiEndpoint).Host
 
 Write-Host "==> Target account: $aiName  ($hostname)" -ForegroundColor Cyan
 

@@ -153,6 +153,35 @@ resource vnetSec 'Microsoft.Network/virtualNetworks@2024-05-01' = if (deploySeco
   }
 }
 
+// Bidirectional VNet peering between primary and secondary VNets. Required so
+// that PP-injected runners egressing through the SECONDARY delegated subnet
+// can reach the Private Endpoint NIC, which lives in the PRIMARY VNet.
+// Without this, name resolution succeeds (DNS zones are linked to both VNets)
+// but the connection times out at the IP layer.
+resource peerPriToSec 'Microsoft.Network/virtualNetworks/virtualNetworkPeerings@2024-05-01' = if (deploySecondary) {
+  name: 'peer-pri-to-sec'
+  parent: vnet
+  properties: {
+    allowVirtualNetworkAccess: true
+    allowForwardedTraffic: false
+    allowGatewayTransit: false
+    useRemoteGateways: false
+    remoteVirtualNetwork: { id: vnetSec.id }
+  }
+}
+
+resource peerSecToPri 'Microsoft.Network/virtualNetworks/virtualNetworkPeerings@2024-05-01' = if (deploySecondary) {
+  name: 'peer-sec-to-pri'
+  parent: vnetSec
+  properties: {
+    allowVirtualNetworkAccess: true
+    allowForwardedTraffic: false
+    allowGatewayTransit: false
+    useRemoteGateways: false
+    remoteVirtualNetwork: { id: vnet.id }
+  }
+}
+
 resource aiServices 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
   name: aiName
   location: location
@@ -186,6 +215,21 @@ resource dnsLinks 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06
   properties: {
     registrationEnabled: false
     virtualNetwork: { id: vnet.id }
+  }
+}]
+
+// Link the same Private DNS zones to the SECONDARY VNet too. PP-injected
+// runners can egress through either delegated subnet (primary OR secondary);
+// without this link, requests landing on the secondary subnet hit NODATA on
+// privatelink.*.azure.com and fail with "Proxy could not connect to target
+// service ... no data of the requested type was found".
+resource dnsLinksSec 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = [for (zoneName, i) in privateDnsZoneNames: if (deploySecondary) {
+  name: '${vnetNameSec}-link'
+  parent: dnsZones[i]
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: { id: vnetSec.id }
   }
 }]
 

@@ -18,6 +18,8 @@ param(
   [string] $EnterprisePolicyArmId,
   [string] $PowerPlatformEnvId,
   [string] $TenantId,
+  [string] $ResourceGroup,
+  [string] $SubscriptionId,
   [string] $EnvFile = (Join-Path (Split-Path -Parent $PSScriptRoot) '.env'),
   [switch] $ForceAuth,
   [switch] $UseDeviceCode,
@@ -38,9 +40,27 @@ if (-not $EnterprisePolicyArmId) {
   }
 }
 
+# Fallback for the ARM-template path: discover the policy from the resource group.
+if (-not $ResourceGroup)   { $ResourceGroup   = $env:AZURE_RESOURCE_GROUP }
+if (-not $SubscriptionId)  { $SubscriptionId  = $env:AZURE_SUBSCRIPTION_ID }
+if (-not $EnterprisePolicyArmId -and $ResourceGroup) {
+  if (-not $SubscriptionId) { $SubscriptionId = az account show --query id -o tsv }
+  if ($SubscriptionId) { az account set --subscription $SubscriptionId | Out-Null }
+  Write-Host "==> Discovering Enterprise Policy in resource group $ResourceGroup" -ForegroundColor Cyan
+  $EnterprisePolicyArmId = az resource list -g $ResourceGroup `
+      --resource-type 'Microsoft.PowerPlatform/enterprisePolicies' `
+      --query '[0].id' -o tsv 2>$null
+  if (-not $EnterprisePolicyArmId) {
+    throw "No Microsoft.PowerPlatform/enterprisePolicies resource found in '$ResourceGroup'."
+  }
+  Write-Host "    Found: $EnterprisePolicyArmId"
+}
+
+if (-not $TenantId) { $TenantId = az account show --query tenantId -o tsv 2>$null }
+
 foreach ($v in 'EnterprisePolicyArmId','PowerPlatformEnvId','TenantId') {
   if (-not (Get-Variable -Name $v -ValueOnly -ErrorAction SilentlyContinue)) {
-    throw "Missing required value '$v'. Set it in $EnvFile or pass it explicitly."
+    throw "Missing required value '$v'. Set it in $EnvFile (AZURE_RESOURCE_GROUP enables policy discovery), pass it explicitly, or pass -ResourceGroup so the script can discover the Enterprise Policy."
   }
 }
 
