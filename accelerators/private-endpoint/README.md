@@ -54,31 +54,37 @@ You have two options. Pick **one** of them, then continue with the linking step.
 
 #### Option A — One-click ARM deploy (recommended)
 
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fgokseloral%2Faccelerator-privateendpoint%2Fmain%2Finfra%2Fazuredeploy.json)
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fgokseloral%2FCopilot-Studio-and-Azure%2Fmain%2Faccelerators%2Fprivate-endpoint%2Finfra%2Fazuredeploy.json)
+[![Visualize](https://raw.githubusercontent.com/Azure/azure-quickstart-templates/master/1-CONTRIBUTION-GUIDE/images/visualizebutton.svg?sanitize=true)](http://armviz.io/#/?load=https%3A%2F%2Fraw.githubusercontent.com%2Fgokseloral%2FCopilot-Studio-and-Azure%2Fmain%2Faccelerators%2Fprivate-endpoint%2Finfra%2Fazuredeploy.json)
 
 The portal blade collects:
 
 | Parameter | Description | Example |
 | --- | --- | --- |
 | `baseName` | 3–11 chars, lowercase alphanumerics, used to derive resource names | `prvendcu` |
-| `location` | Primary Azure region (Content Understanding-supported) | `westus`, `swedencentral`, `australiaeast` |
-| `secondaryLocation` | Paired Azure region for the second PP-delegated subnet | `eastus` (paired with `westus`) |
-| `powerPlatformGeo` | PP geo for the Enterprise Policy resource location (NOT an Azure region) | `unitedstates`, `europe`, `asia`, `australia` |
+| `powerPlatformRegion` | Power Platform region. Drives the primary Azure region (Content Understanding-supported), the paired secondary Azure region, and the Enterprise Policy `location`. Only PP regions where at least one paired Azure region supports Content Understanding are listed. | `unitedstates`, `europe`, `unitedkingdom`, `japan`, `australia`, `asia`, `singapore`, `sweden` |
 | `powerPlatformEnvironmentId` | GUID of the target PP environment (NOT the org URL) | `00000000-0000-0000-0000-000000000000` |
 | `vnetAddressPrefix` / `peSubnetPrefix` / `ppSubnetPrefix` | Primary VNet + subnet CIDRs | `10.50.0.0/16` / `10.50.1.0/24` / `10.50.2.0/24` |
-| `secondaryVnetAddressPrefix` / `secondaryPpSubnetPrefix` | Secondary VNet + delegated subnet CIDRs (must NOT overlap primary) | `10.51.0.0/16` / `10.51.2.0/24` |
+| `secondaryVnetAddressPrefix` / `secondaryPpSubnetPrefix` | Secondary VNet + delegated subnet CIDRs (must NOT overlap primary). Ignored for single-region PP geos (`singapore`, `sweden`). | `10.51.0.0/16` / `10.51.2.0/24` |
 | `enterprisePolicyName` | Name of the `Microsoft.PowerPlatform/enterprisePolicies` resource | `ep-vnet-prvendcu` |
 
 Tenant ID, subscription ID, and the signed-in identity come from the portal
 session — you don't need to enter them.
 
-**Region-pair reference** (pick `secondaryLocation` from the [Azure paired regions list](https://learn.microsoft.com/azure/reliability/cross-region-replication-azure#azure-paired-regions)):
+**Region mapping reference.** The template derives the Azure regions and the PP geo string from `powerPlatformRegion` using the table below. PP regions that have **no** Content Understanding-supported Azure region (South Africa, India, France, Germany, Switzerland, Canada, Brazil, UAE, Korea, Norway, Italy, US Government) are **not** listed because Content Understanding cannot be provisioned there. See [PP supported regions](https://learn.microsoft.com/power-platform/admin/vnet-support-overview#supported-regions) and [Content Understanding region support](https://learn.microsoft.com/azure/ai-services/content-understanding/language-region-support#region-support).
 
-| Primary (`location`) | Paired (`secondaryLocation`) | PP geo (`powerPlatformGeo`) |
-| --- | --- | --- |
-| `westus` | `eastus` | `unitedstates` |
-| `swedencentral` | `swedensouth` | `europe` |
-| `australiaeast` | `australiasoutheast` | `australia` |
+| `powerPlatformRegion` | Primary Azure region (CU) | Secondary Azure region | Enterprise Policy `location` (PP geo) |
+| --- | --- | --- | --- |
+| `unitedstates`  | `westus`        | `eastus`             | `unitedstates`  |
+| `europe`        | `westeurope`    | `northeurope`        | `europe`        |
+| `unitedkingdom` | `uksouth`       | `ukwest`             | `unitedkingdom` |
+| `japan`         | `japaneast`     | `japanwest`          | `japan`         |
+| `australia`     | `australiaeast` | `australiasoutheast` | `australia`     |
+| `asia`          | `southeastasia` | `eastasia`           | `asia`          |
+| `singapore`     | `southeastasia` | *(none — single-region geo)* | `singapore` |
+| `sweden`        | `swedencentral` | *(none — single-region geo)* | `sweden`    |
+
+> For `singapore` and `sweden` the template skips the secondary VNet entirely; the Enterprise Policy is created with one delegated subnet only.
 
 #### Option B — Scripted (`.env` + PowerShell)
 
@@ -142,7 +148,7 @@ Invoke-RestMethod -Uri $uri -Headers @{ Authorization = "Bearer $tok" } |
   Select-Object -ExpandProperty enterprisePolicies |
   ConvertTo-Json -Depth 10
 ```
-
+![PowerShell response to check the status of the Enterprise Policy Link](image-2.png)
 Look for `"linkStatus": "Linked"` inside the `vNets` object — that confirms
 the policy is bound to the environment. (PowerShell's default table view
 truncates this nested field, so we pipe to `ConvertTo-Json` to see it in full.)
@@ -153,6 +159,8 @@ truncates this nested field, so we pipe to `ConvertTo-Json` to see it in full.)
 2. Add an action from the custom connector (e.g. **List Analyzers**).
 3. Create a new connection — supply the Cognitive Services key as the API key.
 4. Run the flow. A `200` response confirms Power Platform → delegated subnet → Private Endpoint → Azure AI Services is fully wired.
+
+![Testing connectivity to Azure Content Understanding service via custom connector action used in PowerAutomate flow](image-3.png)
 
 ### Troubleshooting
 

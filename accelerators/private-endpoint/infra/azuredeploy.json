@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.42.1.51946",
-      "templateHash": "11697340308613155316"
+      "templateHash": "7277992998744069205"
     }
   },
   "parameters": {
@@ -18,30 +18,21 @@
         "description": "Base name (3-11 chars, lowercase alphanumerics) used to derive resource names."
       }
     },
-    "location": {
-      "type": "string",
-      "defaultValue": "westus",
-      "allowedValues": [
-        "westus",
-        "swedencentral",
-        "australiaeast"
-      ],
-      "metadata": {
-        "description": "Primary Azure region. Content Understanding supported regions only."
-      }
-    },
-    "secondaryLocation": {
-      "type": "string",
-      "defaultValue": "eastus",
-      "metadata": {
-        "description": "Paired secondary Azure region (used for the second PP-delegated subnet)."
-      }
-    },
-    "powerPlatformGeo": {
+    "powerPlatformRegion": {
       "type": "string",
       "defaultValue": "unitedstates",
+      "allowedValues": [
+        "unitedstates",
+        "europe",
+        "unitedkingdom",
+        "japan",
+        "australia",
+        "asia",
+        "singapore",
+        "sweden"
+      ],
       "metadata": {
-        "description": "Power Platform geo for the Enterprise Policy resource. Examples: unitedstates, europe, asia, australia. NOT an Azure region."
+        "description": "Power Platform region. Determines primary Azure region (Content Understanding-supported), paired secondary Azure region, and Enterprise Policy location. Only PP regions where at least one paired Azure region supports Content Understanding are listed."
       }
     },
     "powerPlatformEnvironmentId": {
@@ -75,14 +66,14 @@
       "type": "string",
       "defaultValue": "10.51.0.0/16",
       "metadata": {
-        "description": "Secondary VNet address space (must NOT overlap primary)."
+        "description": "Secondary VNet address space (must NOT overlap primary). Ignored for single-region PP geos (singapore, sweden)."
       }
     },
     "secondaryPpSubnetPrefix": {
       "type": "string",
       "defaultValue": "10.51.2.0/24",
       "metadata": {
-        "description": "Secondary PP-delegated subnet prefix (/24, must be inside secondaryVnetAddressPrefix)."
+        "description": "Secondary PP-delegated subnet prefix (/24, must be inside secondaryVnetAddressPrefix). Ignored for single-region PP geos."
       }
     },
     "enterprisePolicyName": {
@@ -104,6 +95,52 @@
     }
   },
   "variables": {
+    "regionMap": {
+      "unitedstates": {
+        "primary": "westus",
+        "secondary": "eastus",
+        "ppGeo": "unitedstates"
+      },
+      "europe": {
+        "primary": "westeurope",
+        "secondary": "northeurope",
+        "ppGeo": "europe"
+      },
+      "unitedkingdom": {
+        "primary": "uksouth",
+        "secondary": "ukwest",
+        "ppGeo": "unitedkingdom"
+      },
+      "japan": {
+        "primary": "japaneast",
+        "secondary": "japanwest",
+        "ppGeo": "japan"
+      },
+      "australia": {
+        "primary": "australiaeast",
+        "secondary": "australiasoutheast",
+        "ppGeo": "australia"
+      },
+      "asia": {
+        "primary": "southeastasia",
+        "secondary": "eastasia",
+        "ppGeo": "asia"
+      },
+      "singapore": {
+        "primary": "southeastasia",
+        "secondary": "",
+        "ppGeo": "singapore"
+      },
+      "sweden": {
+        "primary": "swedencentral",
+        "secondary": "",
+        "ppGeo": "sweden"
+      }
+    },
+    "location": "[variables('regionMap')[parameters('powerPlatformRegion')].primary]",
+    "secondaryLocation": "[variables('regionMap')[parameters('powerPlatformRegion')].secondary]",
+    "powerPlatformGeo": "[variables('regionMap')[parameters('powerPlatformRegion')].ppGeo]",
+    "deploySecondary": "[not(empty(variables('secondaryLocation')))]",
     "vnetName": "[format('vnet-{0}', parameters('baseName'))]",
     "vnetNameSec": "[format('vnet-{0}-sec', parameters('baseName'))]",
     "peSubnetName": "snet-pe",
@@ -122,7 +159,7 @@
       "type": "Microsoft.Network/virtualNetworks",
       "apiVersion": "2024-05-01",
       "name": "[variables('vnetName')]",
-      "location": "[parameters('location')]",
+      "location": "[variables('location')]",
       "tags": "[parameters('tags')]",
       "properties": {
         "addressSpace": {
@@ -160,10 +197,11 @@
       }
     },
     {
+      "condition": "[variables('deploySecondary')]",
       "type": "Microsoft.Network/virtualNetworks",
       "apiVersion": "2024-05-01",
       "name": "[variables('vnetNameSec')]",
-      "location": "[parameters('secondaryLocation')]",
+      "location": "[if(variables('deploySecondary'), variables('secondaryLocation'), variables('location'))]",
       "tags": "[parameters('tags')]",
       "properties": {
         "addressSpace": {
@@ -195,7 +233,7 @@
       "type": "Microsoft.CognitiveServices/accounts",
       "apiVersion": "2024-10-01",
       "name": "[variables('aiName')]",
-      "location": "[parameters('location')]",
+      "location": "[variables('location')]",
       "tags": "[parameters('tags')]",
       "kind": "AIServices",
       "sku": {
@@ -251,7 +289,7 @@
       "type": "Microsoft.Network/privateEndpoints",
       "apiVersion": "2024-05-01",
       "name": "[variables('peName')]",
-      "location": "[parameters('location')]",
+      "location": "[variables('location')]",
       "tags": "[parameters('tags')]",
       "properties": {
         "customNetworkInterfaceName": "[variables('peNicName')]",
@@ -303,25 +341,12 @@
       "type": "Microsoft.PowerPlatform/enterprisePolicies",
       "apiVersion": "2020-10-30-preview",
       "name": "[parameters('enterprisePolicyName')]",
-      "location": "[parameters('powerPlatformGeo')]",
+      "location": "[variables('powerPlatformGeo')]",
       "tags": "[parameters('tags')]",
       "kind": "NetworkInjection",
       "properties": {
         "networkInjection": {
-          "virtualNetworks": [
-            {
-              "id": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]",
-              "subnet": {
-                "name": "[variables('ppSubnetName')]"
-              }
-            },
-            {
-              "id": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetNameSec'))]",
-              "subnet": {
-                "name": "[variables('ppSubnetName')]"
-              }
-            }
-          ]
+          "virtualNetworks": "[if(variables('deploySecondary'), createArray(createObject('id', resourceId('Microsoft.Network/virtualNetworks', variables('vnetName')), 'subnet', createObject('name', variables('ppSubnetName'))), createObject('id', resourceId('Microsoft.Network/virtualNetworks', variables('vnetNameSec')), 'subnet', createObject('name', variables('ppSubnetName')))), createArray(createObject('id', resourceId('Microsoft.Network/virtualNetworks', variables('vnetName')), 'subnet', createObject('name', variables('ppSubnetName')))))]"
         }
       },
       "dependsOn": [
@@ -349,7 +374,7 @@
     },
     "vnetSecondaryResourceId": {
       "type": "string",
-      "value": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetNameSec'))]"
+      "value": "[if(variables('deploySecondary'), resourceId('Microsoft.Network/virtualNetworks', variables('vnetNameSec')), '')]"
     },
     "ppSubnetResourceId": {
       "type": "string",
@@ -357,7 +382,7 @@
     },
     "ppSubnetSecondaryResourceId": {
       "type": "string",
-      "value": "[format('{0}/subnets/{1}', resourceId('Microsoft.Network/virtualNetworks', variables('vnetNameSec')), variables('ppSubnetName'))]"
+      "value": "[if(variables('deploySecondary'), format('{0}/subnets/{1}', resourceId('Microsoft.Network/virtualNetworks', variables('vnetNameSec')), variables('ppSubnetName')), '')]"
     },
     "peSubnetResourceId": {
       "type": "string",
@@ -375,17 +400,21 @@
       "type": "string",
       "value": "[parameters('powerPlatformEnvironmentId')]"
     },
+    "powerPlatformRegion": {
+      "type": "string",
+      "value": "[parameters('powerPlatformRegion')]"
+    },
     "location": {
       "type": "string",
-      "value": "[parameters('location')]"
+      "value": "[variables('location')]"
     },
     "secondaryLocation": {
       "type": "string",
-      "value": "[parameters('secondaryLocation')]"
+      "value": "[variables('secondaryLocation')]"
     },
     "powerPlatformGeo": {
       "type": "string",
-      "value": "[parameters('powerPlatformGeo')]"
+      "value": "[variables('powerPlatformGeo')]"
     }
   }
 }

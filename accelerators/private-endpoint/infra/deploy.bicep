@@ -2,6 +2,19 @@
 // One-click deployable: VNets (primary + paired secondary) + AI Services with
 // Private Endpoint + Private DNS + Power Platform Enterprise Policy.
 //
+// Pick a Power Platform region; the template derives:
+//   * the primary Azure region (must be Content Understanding-supported)
+//   * the paired secondary Azure region (delegated subnet for PP failover)
+//   * the Enterprise Policy `location` (PP geo string)
+//
+// Only PP regions that have at least one Content Understanding-supported
+// Azure region are exposed. Single-region PP geos (Sweden, Singapore) skip
+// the secondary VNet.
+//
+// Sources:
+//   PP supported regions: https://learn.microsoft.com/power-platform/admin/vnet-support-overview#supported-regions
+//   CU supported regions: https://learn.microsoft.com/azure/ai-services/content-understanding/language-region-support#region-support
+//
 // Linking the policy to a Power Platform environment is NOT done here
 // (requires PP admin auth). Run scripts/link-enterprise-policy.ps1 after.
 // =============================================================================
@@ -12,15 +25,18 @@ targetScope = 'resourceGroup'
 @maxLength(11)
 param baseName string = 'prvendcu'
 
-@description('Primary Azure region. Content Understanding supported regions only.')
-@allowed([ 'westus', 'swedencentral', 'australiaeast' ])
-param location string = 'westus'
-
-@description('Paired secondary Azure region (used for the second PP-delegated subnet).')
-param secondaryLocation string = 'eastus'
-
-@description('Power Platform geo for the Enterprise Policy resource. Examples: unitedstates, europe, asia, australia. NOT an Azure region.')
-param powerPlatformGeo string = 'unitedstates'
+@description('Power Platform region. Determines primary Azure region (Content Understanding-supported), paired secondary Azure region, and Enterprise Policy location. Only PP regions where at least one paired Azure region supports Content Understanding are listed.')
+@allowed([
+  'unitedstates'   // westus  (CU) + eastus    (paired)
+  'europe'         // westeurope (CU) + northeurope (CU)
+  'unitedkingdom'  // uksouth (CU) + ukwest
+  'japan'          // japaneast (CU) + japanwest
+  'australia'      // australiaeast (CU) + australiasoutheast
+  'asia'           // southeastasia (CU) + eastasia
+  'singapore'      // southeastasia (CU) - single-region geo
+  'sweden'         // swedencentral (CU) - single-region geo
+])
+param powerPlatformRegion string = 'unitedstates'
 
 @description('Power Platform environment GUID (NOT the org URL). Persisted as a deployment output for downstream linking.')
 param powerPlatformEnvironmentId string
@@ -34,10 +50,10 @@ param peSubnetPrefix string = '10.50.1.0/24'
 @description('Power Platform delegated subnet prefix (must be /24, no NSG, no route table).')
 param ppSubnetPrefix string = '10.50.2.0/24'
 
-@description('Secondary VNet address space (must NOT overlap primary).')
+@description('Secondary VNet address space (must NOT overlap primary). Ignored for single-region PP geos (singapore, sweden).')
 param secondaryVnetAddressPrefix string = '10.51.0.0/16'
 
-@description('Secondary PP-delegated subnet prefix (/24, must be inside secondaryVnetAddressPrefix).')
+@description('Secondary PP-delegated subnet prefix (/24, must be inside secondaryVnetAddressPrefix). Ignored for single-region PP geos.')
 param secondaryPpSubnetPrefix string = '10.51.2.0/24'
 
 @description('Name for the Enterprise Policy resource.')
@@ -48,6 +64,27 @@ param tags object = {
   workload: 'content-understanding-pe'
   managedBy: 'arm-one-click'
 }
+
+// -----------------------------------------------------------------------------
+// Region mapping: PP region -> { primary Azure region (CU), secondary Azure
+// region (paired for delegated subnet), PP geo string for enterprisePolicies }.
+// Single-region PP geos set secondary = '' to skip the secondary VNet.
+// -----------------------------------------------------------------------------
+var regionMap = {
+  unitedstates:  { primary: 'westus',         secondary: 'eastus',              ppGeo: 'unitedstates'  }
+  europe:        { primary: 'westeurope',     secondary: 'northeurope',         ppGeo: 'europe'        }
+  unitedkingdom: { primary: 'uksouth',        secondary: 'ukwest',              ppGeo: 'unitedkingdom' }
+  japan:         { primary: 'japaneast',      secondary: 'japanwest',           ppGeo: 'japan'         }
+  australia:     { primary: 'australiaeast',  secondary: 'australiasoutheast',  ppGeo: 'australia'     }
+  asia:          { primary: 'southeastasia',  secondary: 'eastasia',            ppGeo: 'asia'          }
+  singapore:     { primary: 'southeastasia',  secondary: '',                    ppGeo: 'singapore'     }
+  sweden:        { primary: 'swedencentral',  secondary: '',                    ppGeo: 'sweden'        }
+}
+
+var location          = regionMap[powerPlatformRegion].primary
+var secondaryLocation = regionMap[powerPlatformRegion].secondary
+var powerPlatformGeo  = regionMap[powerPlatformRegion].ppGeo
+var deploySecondary   = !empty(secondaryLocation)
 
 var vnetName     = 'vnet-${baseName}'
 var vnetNameSec  = 'vnet-${baseName}-sec'
@@ -93,9 +130,9 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
   }
 }
 
-resource vnetSec 'Microsoft.Network/virtualNetworks@2024-05-01' = {
+resource vnetSec 'Microsoft.Network/virtualNetworks@2024-05-01' = if (deploySecondary) {
   name: vnetNameSec
-  location: secondaryLocation
+  location: deploySecondary ? secondaryLocation : location
   tags: tags
   properties: {
     addressSpace: { addressPrefixes: [ secondaryVnetAddressPrefix ] }
@@ -190,13 +227,18 @@ resource enterprisePolicy 'Microsoft.PowerPlatform/enterprisePolicies@2020-10-30
   kind: 'NetworkInjection'
   properties: {
     networkInjection: {
-      virtualNetworks: [
+      virtualNetworks: deploySecondary ? [
         {
           id: vnet.id
           subnet: { name: ppSubnetName }
         }
         {
           id: vnetSec.id
+          subnet: { name: ppSubnetName }
+        }
+      ] : [
+        {
+          id: vnet.id
           subnet: { name: ppSubnetName }
         }
       ]
@@ -208,13 +250,14 @@ output aiAccountName             string = aiServices.name
 output aiAccountEndpoint         string = aiServices.properties.endpoint
 output aiAccountResourceId       string = aiServices.id
 output vnetResourceId            string = vnet.id
-output vnetSecondaryResourceId   string = vnetSec.id
+output vnetSecondaryResourceId   string = deploySecondary ? vnetSec.id : ''
 output ppSubnetResourceId        string = '${vnet.id}/subnets/${ppSubnetName}'
-output ppSubnetSecondaryResourceId string = '${vnetSec.id}/subnets/${ppSubnetName}'
+output ppSubnetSecondaryResourceId string = deploySecondary ? '${vnetSec.id}/subnets/${ppSubnetName}' : ''
 output peSubnetResourceId        string = '${vnet.id}/subnets/${peSubnetName}'
 output privateEndpointId         string = privateEndpoint.id
 output enterprisePolicyId        string = enterprisePolicy.id
 output powerPlatformEnvironmentId string = powerPlatformEnvironmentId
+output powerPlatformRegion       string = powerPlatformRegion
 output location                  string = location
 output secondaryLocation         string = secondaryLocation
 output powerPlatformGeo          string = powerPlatformGeo
