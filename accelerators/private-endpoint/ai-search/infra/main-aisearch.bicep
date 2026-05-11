@@ -50,32 +50,41 @@ param existingAiSearchResourceId string = ''
 ])
 param aiSearchSku string = 'basic'
 
-@description('Number of replicas. Basic SKU supports up to 3; Standard and above up to 12.')
-@minValue(1)
-@maxValue(12)
-param replicaCount int = 1
-
-@description('Number of partitions. Basic SKU supports only 1.')
-@allowed([ 1, 2, 3, 4, 6, 12 ])
-param partitionCount int = 1
-
-@description('Primary VNet address space.')
+@description('Primary VNet address space. Ignored when provisionVnet=false.')
 param vnetAddressPrefix string = '10.60.0.0/16'
 
-@description('Private Endpoint subnet address prefix (/24 recommended).')
+@description('Private Endpoint subnet address prefix (/24 recommended). Ignored when provisionVnet=false.')
 param peSubnetPrefix string = '10.60.1.0/24'
 
-@description('Power Platform delegated subnet address prefix (must be /24, no NSG, no route table).')
+@description('Power Platform delegated subnet address prefix (must be /24, no NSG, no route table). Ignored when provisionVnet=false.')
 param ppSubnetPrefix string = '10.60.2.0/24'
 
-@description('Secondary VNet address space. Must not overlap primary. Ignored for single-region PP geos.')
+@description('Secondary VNet address space. Must not overlap primary. Ignored for single-region PP geos or when provisionVnet=false.')
 param secondaryVnetAddressPrefix string = '10.61.0.0/16'
 
-@description('Secondary Power Platform delegated subnet prefix (/24). Ignored for single-region PP geos.')
+@description('Secondary Power Platform delegated subnet prefix (/24). Ignored for single-region PP geos or when provisionVnet=false.')
 param secondaryPpSubnetPrefix string = '10.61.2.0/24'
 
-@description('Name of the Microsoft.PowerPlatform/enterprisePolicies resource.')
-param enterprisePolicyName string = 'ep-vnet-${baseName}-srch'
+@description('Set true (default) to create new VNets with subnets. Set false to use existing VNets — supply the existing resource IDs below.')
+param provisionVnet bool = true
+
+@description('Full ARM resource ID of the existing primary VNet. Used only when provisionVnet=false. Must already contain a PE subnet and a PP-delegated subnet.')
+param existingVnetId string = ''
+
+@description('Name of the existing PE subnet in the primary VNet. Used only when provisionVnet=false. Must have privateEndpointNetworkPolicies=Disabled.')
+param existingPeSubnetName string = 'snet-pe'
+
+@description('Name of the existing Power Platform delegated subnet in the primary VNet. Used only when provisionVnet=false. Must be /24, delegated to Microsoft.PowerPlatform/enterprisePolicies.')
+param existingPpSubnetName string = 'snet-powerplatform'
+
+@description('Full ARM resource ID of the existing secondary VNet. Used only when provisionVnet=false and the PP geo is multi-region. Must contain a PP-delegated subnet.')
+param existingSecondaryVnetId string = ''
+
+@description('Name of the existing PP-delegated subnet in the secondary VNet. Used only when provisionVnet=false and the PP geo is multi-region.')
+param existingSecondaryPpSubnetName string = 'snet-powerplatform'
+
+@description('Deploy a storage account with sample health-plan PDFs and create an index/indexer. Requires running scripts/load-sample-data.ps1 after deployment.')
+param deploySampleData bool = false
 
 @description('Tags applied to all provisioned resources.')
 param tags object = {
@@ -119,10 +128,17 @@ var searchResourceId  = provisionAiSearch
   ? resourceId('Microsoft.Search/searchServices', searchName)
   : existingAiSearchResourceId
 
+// Resolve VNet and subnet IDs — new or existing
+var resolvedVnetId          = provisionVnet ? vnet.id : existingVnetId
+var resolvedPeSubnetName    = provisionVnet ? peSubnetName : existingPeSubnetName
+var resolvedPpSubnetName    = provisionVnet ? ppSubnetName : existingPpSubnetName
+var resolvedSecVnetId       = provisionVnet ? (isSingleRegionGeo ? '' : vnetSec.id) : existingSecondaryVnetId
+var resolvedSecPpSubnetName = provisionVnet ? ppSubnetName : existingSecondaryPpSubnetName
+
 // ---------------------------------------------------------------------------
-// Primary VNet (pe-subnet + pp-delegated-subnet)
+// Primary VNet (pe-subnet + pp-delegated-subnet) — skipped when provisionVnet=false
 // ---------------------------------------------------------------------------
-resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
+resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = if (provisionVnet) {
   name: vnetName
   location: primaryLocation
   tags: tags
@@ -161,9 +177,10 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
 
 // ---------------------------------------------------------------------------
 // Secondary VNet — skipped for single-region PP geos (singapore, sweden)
+// Also skipped when provisionVnet=false.
 // Required by PP Enterprise Policy in multi-region geographies.
 // ---------------------------------------------------------------------------
-resource vnetSec 'Microsoft.Network/virtualNetworks@2024-05-01' = if (!isSingleRegionGeo) {
+resource vnetSec 'Microsoft.Network/virtualNetworks@2024-05-01' = if (provisionVnet && !isSingleRegionGeo) {
   name: vnetSecName
   location: secondaryLocation
   tags: tags
@@ -205,8 +222,8 @@ resource searchService 'Microsoft.Search/searchServices@2024-06-01-preview' = if
     type: 'SystemAssigned'
   }
   properties: {
-    replicaCount: replicaCount
-    partitionCount: partitionCount
+    replicaCount: 1
+    partitionCount: 1
     // Disable public network access — only the private endpoint can reach the data plane.
     publicNetworkAccess: 'disabled'
     networkRuleSet: {
@@ -241,7 +258,7 @@ resource dnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-
   location: 'global'
   properties: {
     registrationEnabled: false
-    virtualNetwork: { id: vnet.id }
+    virtualNetwork: { id: resolvedVnetId }
   }
 }
 
@@ -256,7 +273,7 @@ resource privateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = {
   properties: {
     customNetworkInterfaceName: peNicName
     subnet: {
-      id: '${vnet.id}/subnets/${peSubnetName}'
+      id: '${resolvedVnetId}/subnets/${resolvedPeSubnetName}'
     }
     privateLinkServiceConnections: [
       {
@@ -292,7 +309,7 @@ resource peDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@202
 // location must be the PP geo string (e.g. 'unitedstates'), NOT an Azure region.
 // ---------------------------------------------------------------------------
 resource enterprisePolicy 'Microsoft.PowerPlatform/enterprisePolicies@2020-10-30-preview' = {
-  name: enterprisePolicyName
+  name: 'ep-vnet-${baseName}-srch'
   // IMPORTANT: location must be the PP geography string, not an Azure region name.
   location: powerPlatformRegion
   tags: tags
@@ -302,23 +319,56 @@ resource enterprisePolicy 'Microsoft.PowerPlatform/enterprisePolicies@2020-10-30
       virtualNetworks: isSingleRegionGeo
         ? [
             {
-              id: vnet.id
-              subnet: { name: ppSubnetName }
+              id: resolvedVnetId
+              subnet: { name: resolvedPpSubnetName }
             }
           ]
         : [
             {
-              id: vnet.id
-              subnet: { name: ppSubnetName }
+              id: resolvedVnetId
+              subnet: { name: resolvedPpSubnetName }
             }
             {
-              id: vnetSec.id
-              subnet: { name: ppSubnetName }
+              id: resolvedSecVnetId
+              subnet: { name: resolvedSecPpSubnetName }
             }
           ]
     }
   }
   dependsOn: [ peDnsGroup ]
+}
+
+// ---------------------------------------------------------------------------
+// Sample Data — Storage Account + blob container (conditional)
+// Used by scripts/load-sample-data.ps1 to host PDFs for indexing.
+// ---------------------------------------------------------------------------
+var storageAccountName = 'st${baseName}${uniqueString(resourceGroup().id)}'
+var sampleContainerName = 'health-plan-pdfs'
+
+resource sampleStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = if (deploySampleData) {
+  name: storageAccountName
+  location: primaryLocation
+  tags: tags
+  sku: { name: 'Standard_LRS' }
+  kind: 'StorageV2'
+  properties: {
+    allowBlobPublicAccess: false
+    minimumTlsVersion: 'TLS1_2'
+    supportsHttpsTrafficOnly: true
+  }
+}
+
+resource sampleBlobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = if (deploySampleData) {
+  name: 'default'
+  parent: sampleStorage
+}
+
+resource sampleContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = if (deploySampleData) {
+  name: sampleContainerName
+  parent: sampleBlobService
+  properties: {
+    publicAccess: 'None'
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -331,8 +381,10 @@ output searchServiceName string = provisionAiSearch
 output searchServiceEndpoint string = 'https://${provisionAiSearch ? searchService.name : last(split(existingAiSearchResourceId, '/'))}.search.windows.net/'
 
 output enterprisePolicyId        string = enterprisePolicy.id
-output ppSubnetResourceId        string = '${vnet.id}/subnets/${ppSubnetName}'
-output ppSubnetSecondaryResourceId string = isSingleRegionGeo ? '' : '${vnetSec.id}/subnets/${ppSubnetName}'
-output vnetId                    string = vnet.id
-output peSubnetResourceId        string = '${vnet.id}/subnets/${peSubnetName}'
+output ppSubnetResourceId        string = '${resolvedVnetId}/subnets/${resolvedPpSubnetName}'
+output ppSubnetSecondaryResourceId string = isSingleRegionGeo ? '' : '${resolvedSecVnetId}/subnets/${resolvedSecPpSubnetName}'
+output vnetId                    string = resolvedVnetId
+output peSubnetResourceId        string = '${resolvedVnetId}/subnets/${resolvedPeSubnetName}'
 output privateDnsZoneId          string = dnsZone.id
+output sampleStorageAccountName  string = deploySampleData ? sampleStorage.name : ''
+output sampleContainerName       string = deploySampleData ? sampleContainerName : ''

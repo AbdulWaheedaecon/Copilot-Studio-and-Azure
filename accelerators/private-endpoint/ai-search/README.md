@@ -2,9 +2,7 @@
 
 ## Objective
 
-Provide an end-to-end accelerator for hosting **Azure AI Search** behind a
-**Private Endpoint** (no public network access) and querying it from a **Power
-Platform Managed Environment** via [Enterprise Policy / VNet
+Provide an end-to-end accelerator for hosting **Azure AI Search** behind a **Private Endpoint** (no public network access) and querying it from a **Power Platform Managed Environment** via [Enterprise Policy / VNet
 injection](https://learn.microsoft.com/power-platform/admin/vnet-support-setup-configure).
 
 > **Why not just use `bypass=AzureServices`?** Power Platform is not on the
@@ -15,13 +13,11 @@ injection](https://learn.microsoft.com/power-platform/admin/vnet-support-setup-c
 
 What you get when you finish the steps below:
 
-* `Microsoft.Search/searchServices` with `publicNetworkAccess=Disabled`, optional
-  system-assigned identity, and a Private Endpoint into a dedicated subnet.
+* `Microsoft.Search/searchServices` with `publicNetworkAccess=Disabled`, optional   system-assigned identity, and a Private Endpoint into a dedicated subnet.
 * One Private DNS zone linked to the primary VNet:
   `privatelink.search.windows.net`.
-* Two delegated subnets in paired Azure regions for Power Platform VNet
-  injection (multi-region PP geos like `unitedstates` require subnets in two
-  regions).
+* Two delegated subnets in [paired Azure regions for Power Platform](https://learn.microsoft.com/power-platform/admin/vnet-support-overview#supported-regions) VNet
+  injection (multi-region PP geos like `unitedstates` require subnets in two regions).
 * `Microsoft.PowerPlatform/enterprisePolicies` (kind `NetworkInjection`)
   referencing both delegated subnets, linked to your Managed PP environment.
 * A Power Platform **custom connector** for the AI Search query REST API (search
@@ -79,10 +75,16 @@ Copy-Item .env.example .env
 | `PP_TENANT_ID` | Microsoft Entra tenant ID |
 | `PP_ENVIRONMENT_ID` | Power Platform environment GUID |
 | `PP_GEO` | Power Platform region (`unitedstates`, `europe`, …) |
-| `ENTERPRISE_POLICY_NAME` | Name for the Enterprise Policy resource |
 | `PROVISION_AI_SEARCH` | `true` to create a new search service, `false` to use existing |
 | `EXISTING_AI_SEARCH_RESOURCE_ID` | Full ARM resource ID — only when `PROVISION_AI_SEARCH=false` |
 | `AI_SEARCH_SKU` | `basic` (default), `standard`, `standard2`, `standard3` |
+| `DEPLOY_SAMPLE_DATA` | `true` to load sample health-plan PDFs into an index |
+| `PROVISION_VNET` | `true` (default) to create new VNets; `false` to use existing |
+| `EXISTING_VNET_ID` | Full ARM resource ID of existing primary VNet — only when `PROVISION_VNET=false` |
+| `EXISTING_PE_SUBNET_NAME` | PE subnet name in existing VNet (default: `snet-pe`) |
+| `EXISTING_PP_SUBNET_NAME` | PP-delegated subnet name in existing VNet (default: `snet-powerplatform`) |
+| `EXISTING_SECONDARY_VNET_ID` | Secondary VNet ARM ID — only for multi-region geos with `PROVISION_VNET=false` |
+| `EXISTING_SECONDARY_PP_SUBNET_NAME` | PP-delegated subnet name in secondary VNet (default: `snet-powerplatform`) |
 
 #### Step 3 — Provision the infrastructure
 
@@ -102,10 +104,21 @@ The portal blade collects:
 | `provisionAiSearch` | `true` (default) to create a new search service; `false` to use existing | `true` |
 | `existingAiSearchResourceId` | Full ARM resource ID of existing search service (when `provisionAiSearch=false`) | `/subscriptions/…/providers/Microsoft.Search/searchServices/<name>` |
 | `aiSearchSku` | SKU for the new search service | `basic` |
-| `replicaCount` / `partitionCount` | Scale settings (basic: max 3 replicas, 1 partition) | `1` / `1` |
-| `vnetAddressPrefix` / `peSubnetPrefix` / `ppSubnetPrefix` | Primary VNet + subnet CIDRs | `10.60.0.0/16` / `10.60.1.0/24` / `10.60.2.0/24` |
-| `secondaryVnetAddressPrefix` / `secondaryPpSubnetPrefix` | Secondary VNet + delegated subnet (ignored for single-region geos) | `10.61.0.0/16` / `10.61.2.0/24` |
-| `enterprisePolicyName` | Enterprise Policy resource name | `ep-vnet-pvsrch-srch` |
+| `deploySampleData` | `true` to provision a storage account and load sample health-plan PDFs into the index (see [Sample Data](#sample-data--optional-health-plan-index) below) | `false` |
+| `provisionVnet` | `true` (default) to create new VNets; `false` to use existing VNets | `true` |
+| `existingVnetId` | Full ARM resource ID of an existing primary VNet (when `provisionVnet=false`) | `/subscriptions/…/providers/Microsoft.Network/virtualNetworks/<name>` |
+| `existingPeSubnetName` | Name of the PE subnet in the existing VNet (when `provisionVnet=false`). Must have `privateEndpointNetworkPolicies=Disabled`. | `snet-pe` |
+| `existingPpSubnetName` | Name of the PP-delegated subnet in the existing VNet (when `provisionVnet=false`). Must be /24, delegated to `Microsoft.PowerPlatform/enterprisePolicies`. | `snet-powerplatform` |
+| `existingSecondaryVnetId` | Full ARM resource ID of an existing secondary VNet (when `provisionVnet=false` and multi-region PP geo) | `/subscriptions/…/providers/Microsoft.Network/virtualNetworks/<name>` |
+| `existingSecondaryPpSubnetName` | Name of the PP-delegated subnet in the existing secondary VNet | `snet-powerplatform` |
+| `vnetAddressPrefix` / `peSubnetPrefix` / `ppSubnetPrefix` | Primary VNet + subnet CIDRs (ignored when `provisionVnet=false`) | `10.60.0.0/16` / `10.60.1.0/24` / `10.60.2.0/24` |
+| `secondaryVnetAddressPrefix` / `secondaryPpSubnetPrefix` | Secondary VNet + delegated subnet (ignored for single-region geos or `provisionVnet=false`) | `10.61.0.0/16` / `10.61.2.0/24` |
+
+> **Using an existing VNet?** Set `provisionVnet=false` and provide `existingVnetId` +
+> subnet names. The existing PE subnet must have `privateEndpointNetworkPolicies` set to
+> `Disabled`. The PP-delegated subnet must be exactly /24 with a delegation to
+> `Microsoft.PowerPlatform/enterprisePolicies` and no NSG or route table attached.
+> For multi-region PP geos (e.g., `unitedstates`), also provide `existingSecondaryVnetId`.
 
 **Region mapping reference:**
 
@@ -272,6 +285,59 @@ az group delete -n $env:AZURE_RESOURCE_GROUP --yes --no-wait
 Sample code provided as-is, no warranty. Review and adapt for production use
 (naming conventions, RBAC, diagnostic settings, address-space planning, etc.).
 
+## Sample Data — Optional Health-Plan Index
+
+Set `DEPLOY_SAMPLE_DATA=true` in your `.env` (or `deploySampleData=true` in the ARM template) to automatically provision a storage account and populate a search index with sample PDF documents from the [Azure-Samples/azure-search-sample-data](https://github.com/Azure-Samples/azure-search-sample-data/tree/main/health-plan) repository.
+
+### What gets created
+
+| Resource | Name | Purpose |
+|---|---|---|
+| Storage account | `st<baseName><uniqueString>` | Hosts the PDF blobs |
+| Blob container | `health-plan-pdfs` | Contains the 6 sample PDFs |
+| Search index | `health-plan-index` | Fields: `content`, `metadata_storage_path` (key), `metadata_storage_name`, `metadata_content_type`, `metadata_storage_size` |
+| Data source | `ds-health-plan-blobs` | Azure Blob data source pointing to the container |
+| Indexer | `ixr-health-plan` | Built-in document cracking (PDF → text); runs once during setup |
+
+### Sample documents
+
+| File | Description |
+|---|---|
+| `Benefit_Options.pdf` | Overview of Northwind Health benefit options |
+| `Northwind_Health_Plus_Benefits_Details.pdf` | Detailed Health Plus plan benefits |
+| `Northwind_Standard_Benefits_Details.pdf` | Detailed Standard plan benefits |
+| `PerksPlus.pdf` | PerksPlus wellness program details |
+| `employee_handbook.pdf` | General employee handbook |
+| `role_library.pdf` | Role descriptions and responsibilities |
+
+### How it works
+
+1. The Bicep template provisions the storage account and blob container (conditional on `deploySampleData=true`).
+2. After the infrastructure deployment, `scripts/load-sample-data.ps1` runs automatically (if using the scripted path) or can be invoked manually:
+
+```powershell
+./scripts/load-sample-data.ps1
+```
+
+The script:
+- Downloads the 6 PDFs from GitHub.
+- Uploads them to the blob container.
+- Detects the deployer's public IP and adds it as the **only** allowed IP rule on the search service firewall (the service is never exposed to the full internet).
+- Creates the index schema, data source, and indexer via the Search REST API.
+- Waits for the indexer to finish processing all documents.
+- Removes the IP rule and **restores** `publicNetworkAccess=Disabled` on the search service.
+
+> **Security note:** The search service is only reachable from your single IP
+> during setup. No full public access is ever enabled. To skip the restore
+> (e.g., for debugging), pass `-SkipPublicAccessRestore`.
+
+### Testing with sample data
+
+Once indexed, you can search the health-plan documents from your custom connector:
+
+- **Power Automate flow:** Use the **Search Documents** action with `indexName=health-plan-index` and `search=benefits`.
+- **Copilot Studio:** Ask the agent a question like _"What are the PerksPlus benefits?"_ — it will call the Search Documents action and return results from the indexed PDFs.
+
 ## Appendix
 
 ### Repository Layout
@@ -288,6 +354,7 @@ ai-search/
     apiProperties-aisearch.json               # connection params / branding
   scripts/
     deploy-aisearch.ps1                       # provision Azure infra from .env
+    load-sample-data.ps1                      # download PDFs + create index/indexer (optional)
     create-and-test-aisearch-connector.ps1    # pac connector create + connectivity test
   docs/
     aisearch-architecture.drawio              # editable architecture diagram
