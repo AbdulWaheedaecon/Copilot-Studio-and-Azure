@@ -72,7 +72,7 @@ if (Test-Path $OutputsFile) {
   $rg             = if ($ResourceGroup) { $ResourceGroup } else { $out.resourceGroup }
   $subId          = if ($SubscriptionId) { $SubscriptionId } else { $out.subscriptionId }
 } else {
-  Write-Host "Outputs file '$OutputsFile' not found — falling back to ARM deployment discovery." -ForegroundColor Yellow
+  Write-Host "Outputs file '$OutputsFile' not found - falling back to ARM deployment discovery." -ForegroundColor Yellow
 
   if (-not $ResourceGroup) {
     $ResourceGroup = Read-Host 'Resource group name (where azuredeploy-aisearch.json was deployed)'
@@ -84,8 +84,8 @@ if (Test-Path $OutputsFile) {
   az account set --subscription $subId | Out-Null
 
   # Try to read outputs from the most recent succeeded deployment.
-  $depName = az deployment group list -g $ResourceGroup `
-      --query "sort_by([?properties.provisioningState=='Succeeded'], &properties.timestamp)[-1].name" -o tsv 2>$null
+  $jmesQuery = "sort_by([?properties.provisioningState=='Succeeded'], &properties.timestamp)[-1].name"
+  $depName = az deployment group list -g $ResourceGroup --query $jmesQuery -o tsv 2>$null
 
   if ($depName) {
     Write-Host "==> Reading outputs from deployment '$depName'" -ForegroundColor Cyan
@@ -171,7 +171,7 @@ if (-not $adminKey) {
 $uri = "https://$hostname/indexes?api-version=2024-07-01"
 try {
   $resp = Invoke-WebRequest -Uri $uri -Headers @{ 'api-key' = $adminKey } -UseBasicParsing -TimeoutSec 30
-  Write-Host "PASS  HTTP $($resp.StatusCode) — data plane reachable from this host." -ForegroundColor Green
+  Write-Host "PASS  HTTP $($resp.StatusCode) - data plane reachable from this host." -ForegroundColor Green
   $json = $resp.Content | ConvertFrom-Json
   $count = if ($json.value) { $json.value.Count } else { 0 }
   Write-Host "      Index count: $count"
@@ -185,10 +185,10 @@ try {
     throw
   } else {
     if ($code -in 403, 401) {
-      Write-Host "EXPECTED FAIL  HTTP $code from public internet — confirms private-endpoint lockdown is working." -ForegroundColor Yellow
+      Write-Host "EXPECTED FAIL  HTTP $code from public internet - confirms private-endpoint lockdown is working." -ForegroundColor Yellow
       Write-Host "  Re-run with -InsideVnetTest from a VM in snet-pe, or validate from a Power Automate flow." -ForegroundColor Yellow
     } else {
-      Write-Host "UNEXPECTED FAIL  HTTP $code — investigate the error." -ForegroundColor Red
+      Write-Host "UNEXPECTED FAIL  HTTP $code - investigate the error." -ForegroundColor Red
       Write-Host $_.Exception.Message -ForegroundColor Red
     }
   }
@@ -198,5 +198,5 @@ Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Cyan
 Write-Host "  1. In the linked Power Platform environment, create a flow with an Instant trigger."
 Write-Host "  2. Add a 'Search Documents' action from the '$ConnectorDisplayName' connector."
-Write-Host "  3. Create a new connection using a Query API key (Azure Portal → AI Search → Keys → Query keys)."
-Write-Host "  4. Set indexName and search='*'. Run the flow — a 200 response confirms end-to-end connectivity."
+Write-Host "  3. Create a new connection using a Query API key (Azure Portal > AI Search > Keys > Query keys)."
+Write-Host "  4. Set indexName and search='*'. Run the flow - a 200 response confirms end-to-end connectivity."

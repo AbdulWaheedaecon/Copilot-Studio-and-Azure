@@ -47,7 +47,8 @@ $PowerPlatformEnvId   = $env:PP_ENVIRONMENT_ID
 $ProvisionAiSearch    = if ($env:PROVISION_AI_SEARCH -eq 'false') { 'false' } else { 'true' }
 $ExistingAiSearchId   = if ($env:EXISTING_AI_SEARCH_RESOURCE_ID) { $env:EXISTING_AI_SEARCH_RESOURCE_ID } else { '' }
 $AiSearchSku          = if ($env:AI_SEARCH_SKU) { $env:AI_SEARCH_SKU } else { 'basic' }
-$DeploySampleData     = if ($env:DEPLOY_SAMPLE_DATA -eq 'true') { 'true' } else { 'false' }
+$DeploySampleData     = $env:DEPLOY_SAMPLE_DATA -eq 'true'
+$SampleStorageName    = if ($env:SAMPLE_STORAGE_ACCOUNT_NAME) { $env:SAMPLE_STORAGE_ACCOUNT_NAME } else { '' }
 $ProvisionVnet        = if ($env:PROVISION_VNET -eq 'false') { 'false' } else { 'true' }
 $ExistingVnetId       = if ($env:EXISTING_VNET_ID) { $env:EXISTING_VNET_ID } else { '' }
 $ExistingPeSubnetName = if ($env:EXISTING_PE_SUBNET_NAME) { $env:EXISTING_PE_SUBNET_NAME } else { 'snet-pe' }
@@ -94,7 +95,6 @@ $params = @(
   "powerPlatformEnvironmentId=$PowerPlatformEnvId",
   "provisionAiSearch=$ProvisionAiSearch",
   "aiSearchSku=$AiSearchSku",
-  "deploySampleData=$DeploySampleData",
   "provisionVnet=$ProvisionVnet"
 )
 
@@ -134,14 +134,10 @@ $searchEndpoint  = $dep.searchServiceEndpoint.value
 $policyId        = $dep.enterprisePolicyId.value
 $ppSubnetId      = $dep.ppSubnetResourceId.value
 $ppSubnetSecId   = $dep.ppSubnetSecondaryResourceId.value
-$sampleStorage   = $dep.sampleStorageAccountName.value
 
 Write-Host "    AI Search name:     $searchName"
 Write-Host "    AI Search endpoint: $searchEndpoint"
 Write-Host "    Enterprise policy:  $policyId"
-if ($sampleStorage) {
-  Write-Host "    Sample storage:     $sampleStorage"
-}
 
 # ---------------------------------------------------------------------------
 # Persist outputs for connector + test scripts
@@ -156,17 +152,20 @@ $outFile = Join-Path $PSScriptRoot 'deployment-outputs-aisearch.json'
   resourceGroup        = $ResourceGroup
   subscriptionId       = $SubscriptionId
   ppEnvironmentId      = $PowerPlatformEnvId
-  sampleStorageAccountName = $sampleStorage
 } | ConvertTo-Json | Set-Content $outFile
 Write-Host "==> Wrote $outFile" -ForegroundColor Green
 
 # ---------------------------------------------------------------------------
 # Optional: Load sample data (index + indexer)
 # ---------------------------------------------------------------------------
-if ($DeploySampleData -eq 'true' -and $sampleStorage) {
-  Write-Host "==> Loading sample data into index..." -ForegroundColor Cyan
-  $sampleScript = Join-Path $PSScriptRoot 'load-sample-data.ps1'
-  & $sampleScript -ResourceGroup $ResourceGroup -SearchServiceName $searchName -StorageAccountName $sampleStorage
+if ($DeploySampleData) {
+  if (-not $SampleStorageName) {
+    Write-Warning "DEPLOY_SAMPLE_DATA=true but SAMPLE_STORAGE_ACCOUNT_NAME is not set in $EnvFile. Skipping sample data load."
+  } else {
+    Write-Host "==> Loading sample data into index..." -ForegroundColor Cyan
+    $sampleScript = Join-Path $PSScriptRoot 'load-sample-data.ps1'
+    & $sampleScript -ResourceGroup $ResourceGroup -SearchServiceName $searchName -StorageAccountName $SampleStorageName
+  }
 }
 
 # ---------------------------------------------------------------------------

@@ -78,7 +78,7 @@ Copy-Item .env.example .env
 | `PROVISION_AI_SEARCH` | `true` to create a new search service, `false` to use existing |
 | `EXISTING_AI_SEARCH_RESOURCE_ID` | Full ARM resource ID — only when `PROVISION_AI_SEARCH=false` |
 | `AI_SEARCH_SKU` | `basic` (default), `standard`, `standard2`, `standard3` |
-| `DEPLOY_SAMPLE_DATA` | `true` to load sample health-plan PDFs into an index |
+| `DEPLOY_SAMPLE_DATA` | `true` to load sample health-plan PDFs into an index (auto-creates Azure OpenAI resource for vectorization) |
 | `PROVISION_VNET` | `true` (default) to create new VNets; `false` to use existing |
 | `EXISTING_VNET_ID` | Full ARM resource ID of existing primary VNet — only when `PROVISION_VNET=false` |
 | `EXISTING_PE_SUBNET_NAME` | PE subnet name in existing VNet (default: `snet-pe`) |
@@ -140,6 +140,53 @@ The portal blade collects:
 ```powershell
 ./scripts/deploy-aisearch.ps1
 ```
+
+#### Step 3.5 — Load sample data (ARM template path only)
+
+> **Skip this step if you used Option B (scripted path).** The `deploy-aisearch.ps1` script calls `load-sample-data.ps1` automatically when `DEPLOY_SAMPLE_DATA=true`.
+
+When you deploy via the one-click ARM template with `deploySampleData=true`, the template provisions the **storage account and container** but cannot run post-deployment scripts from the portal. You must run `load-sample-data.ps1` manually from your local machine to:
+
+1. Download the 6 sample health-plan PDFs from [azure-search-sample-data](https://github.com/Azure-Samples/azure-search-sample-data/tree/main/health-plan).
+2. Upload them to the `health-plan-pdfs` blob container.
+3. Create an Azure OpenAI resource and deploy `text-embedding-3-large` (skipped if `-OpenAIEndpoint` is provided).
+4. Temporarily open the AI Search firewall to your current public IP.
+5. Create the `health-plan-index` index schema (with `contentVector` field, 3072 dimensions), skillset, data source, and indexer via the Search REST API.
+6. Wait for the indexer to run, then restore the firewall to private-only.
+
+```powershell
+# Run from accelerators/private-endpoint/ai-search/
+# Default: auto-creates Azure OpenAI resource with text-embedding-3-large
+./scripts/load-sample-data.ps1 `
+    -ResourceGroup       <your-resource-group> `
+    -SearchServiceName   <search-service-name> `
+    -StorageAccountName  <storage-account-name>
+
+# Or use an existing Azure OpenAI resource:
+./scripts/load-sample-data.ps1 `
+    -ResourceGroup       <your-resource-group> `
+    -SearchServiceName   <search-service-name> `
+    -StorageAccountName  <storage-account-name> `
+    -OpenAIEndpoint      https://my-openai.openai.azure.com/ `
+    -OpenAIApiKey        <key>
+```
+
+| Parameter | Default | Description |
+|---|---|---|
+| `-ResourceGroup` | *(from deployment outputs)* | Azure resource group name |
+| `-SearchServiceName` | *(from deployment outputs)* | Name of the AI Search service |
+| `-StorageAccountName` | *(from deployment outputs)* | Storage account for sample PDFs |
+| `-OpenAIEndpoint` | *(auto-created)* | Existing Azure OpenAI endpoint. If omitted, a new resource is created. |
+| `-OpenAIApiKey` | *(auto-retrieved)* | API key for existing OpenAI resource. Required only with `-OpenAIEndpoint`. |
+| `-OpenAIEmbeddingDeployment` | `text-embedding-3-large` | Name of the embedding model deployment |
+| `-OpenAIModelName` | *(same as deployment)* | Underlying model name for the vectorizer |
+| `-EmbeddingDimensions` | `3072` | Vector dimensions (use `1536` for text-embedding-3-small) |
+| `-SkipVectorization` | `$false` | Skip OpenAI creation and vector embeddings entirely |
+| `-SkipPublicAccessRestore` | `$false` | Leave public access open after indexing (for debugging) |
+
+Replace the placeholder values with the resource names from your deployment. You can find them in the **Deployment details** blade in the Azure portal (the names follow the pattern `srch-<baseName>…` and `stp<baseName>…`).
+
+> **Prerequisites for this step:** Azure CLI (`az`) signed in with at least **Contributor** on the resource group, and **PowerShell 7+** (`pwsh`).
 
 #### Step 4 — Link the Enterprise Policy to your PP environment
 
@@ -282,6 +329,41 @@ az group delete -n $env:AZURE_RESOURCE_GROUP --yes --no-wait
 
 ---
 
+## Sample Data — Optional Health Plan Index
+
+When `deploySampleData=true` is set, the accelerator provisions a **Storage Account** with a `health-plan-pdfs` container and expects 6 sample PDF files to be indexed by Azure AI Search.
+
+> **Important:** The ARM template (portal one-click deploy) only creates the Azure **infrastructure** (storage account + container). The file upload, index, data source, and indexer are created by the `load-sample-data.ps1` script, which must be run separately (see [Step 3.5](#step-35--load-sample-data-arm-template-path-only) above).
+
+### What the script creates
+
+| Resource | Name |
+|---|---|
+| Azure OpenAI resource | `<searchServiceName>-openai` (skipped if `-OpenAIEndpoint` provided) |
+| Model deployment | `text-embedding-3-large` (3072 dimensions) |
+| Blob container | `health-plan-pdfs` |
+| AI Search index | `health-plan-index` |
+| AI Search skillset | `ss-health-plan` |
+| AI Search data source | `ds-health-plan-blobs` |
+| AI Search indexer | `ixr-health-plan` |
+
+### Sample PDF files
+
+The script downloads these files from [Azure-Samples/azure-search-sample-data](https://github.com/Azure-Samples/azure-search-sample-data/tree/main/health-plan):
+
+- `Benefit_Options.pdf`
+- `Northwind_Health_Plus_Benefits_Details.pdf`
+- `Northwind_Standard_Benefits_Details.pdf`
+- `PerksPlus.pdf`
+- `employee_handbook.pdf`
+- `role_library.pdf`
+
+### Re-running the script
+
+The script is idempotent — re-running it will overwrite existing blobs, and the `PUT` calls to the Search REST API will update the index/data source/indexer if they already exist.
+
+---
+
 Sample code provided as-is, no warranty. Review and adapt for production use
 (naming conventions, RBAC, diagnostic settings, address-space planning, etc.).
 
@@ -293,11 +375,14 @@ Set `DEPLOY_SAMPLE_DATA=true` in your `.env` (or `deploySampleData=true` in the 
 
 | Resource | Name | Purpose |
 |---|---|---|
+| Azure OpenAI resource | `<searchServiceName>-openai` | Hosts the embedding model (skipped if `-OpenAIEndpoint` provided) |
+| Model deployment | `text-embedding-3-large` | Generates 3072-dimension vectors for content |
 | Storage account | `st<baseName><uniqueString>` | Hosts the PDF blobs |
 | Blob container | `health-plan-pdfs` | Contains the 6 sample PDFs |
-| Search index | `health-plan-index` | Fields: `content`, `metadata_storage_path` (key), `metadata_storage_name`, `metadata_content_type`, `metadata_storage_size` |
+| Search index | `health-plan-index` | Fields: `id` (key), `title`, `sourceUrl`, `content`, `summary`, `type`, `createdAt`, `contentVector` (3072 dims) |
+| Skillset | `ss-health-plan` | AzureOpenAI embedding skill that vectorizes document content |
 | Data source | `ds-health-plan-blobs` | Azure Blob data source pointing to the container |
-| Indexer | `ixr-health-plan` | Built-in document cracking (PDF → text); runs once during setup |
+| Indexer | `ixr-health-plan` | Built-in document cracking (PDF → text) + vector enrichment; runs once during setup |
 
 ### Sample documents
 
@@ -320,16 +405,21 @@ Set `DEPLOY_SAMPLE_DATA=true` in your `.env` (or `deploySampleData=true` in the 
 ```
 
 The script:
+- Creates an Azure OpenAI resource and deploys `text-embedding-3-large` (3072 dimensions) if no `-OpenAIEndpoint` is provided.
 - Downloads the 6 PDFs from GitHub.
 - Uploads them to the blob container.
 - Detects the deployer's public IP and adds it as the **only** allowed IP rule on the search service firewall (the service is never exposed to the full internet).
-- Creates the index schema, data source, and indexer via the Search REST API.
-- Waits for the indexer to finish processing all documents.
+- Creates the index schema (including `contentVector` field), skillset, data source, and indexer via the Search REST API.
+- Waits for the indexer to finish processing all documents (including vector enrichment via the embedding model).
 - Removes the IP rule and **restores** `publicNetworkAccess=Disabled` on the search service.
 
 > **Security note:** The search service is only reachable from your single IP
 > during setup. No full public access is ever enabled. To skip the restore
 > (e.g., for debugging), pass `-SkipPublicAccessRestore`.
+>
+> **Without vectors:** Pass `-SkipVectorization` to create a keyword-only index
+> (no OpenAI resource will be created). Note that Copilot Studio requires
+> integrated vectorization.
 
 ### Testing with sample data
 

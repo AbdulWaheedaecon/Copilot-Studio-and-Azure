@@ -147,13 +147,6 @@
         "description": "Name of the existing PP-delegated subnet in the secondary VNet. Used only when provisionVnet=false and the PP geo is multi-region."
       }
     },
-    "deploySampleData": {
-      "type": "bool",
-      "defaultValue": false,
-      "metadata": {
-        "description": "Deploy a storage account with sample health-plan PDFs and create an index/indexer. Requires running scripts/load-sample-data.ps1 after deployment."
-      }
-    },
     "tags": {
       "type": "object",
       "defaultValue": {
@@ -224,9 +217,7 @@
     "resolvedPeSubnetName": "[if(parameters('provisionVnet'), variables('peSubnetName'), parameters('existingPeSubnetName'))]",
     "resolvedPpSubnetName": "[if(parameters('provisionVnet'), variables('ppSubnetName'), parameters('existingPpSubnetName'))]",
     "resolvedSecVnetId": "[if(parameters('provisionVnet'), if(variables('isSingleRegionGeo'), '', resourceId('Microsoft.Network/virtualNetworks', variables('vnetSecName'))), parameters('existingSecondaryVnetId'))]",
-    "resolvedSecPpSubnetName": "[if(parameters('provisionVnet'), variables('ppSubnetName'), parameters('existingSecondaryPpSubnetName'))]",
-    "storageAccountName": "[format('st{0}{1}', parameters('baseName'), uniqueString(resourceGroup().id))]",
-    "sampleContainerName": "health-plan-pdfs"
+    "resolvedSecPpSubnetName": "[if(parameters('provisionVnet'), variables('ppSubnetName'), parameters('existingSecondaryPpSubnetName'))]"
   },
   "resources": [
     {
@@ -421,45 +412,6 @@
         "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]",
         "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetSecName'))]"
       ]
-    },
-    {
-      "condition": "[parameters('deploySampleData')]",
-      "type": "Microsoft.Storage/storageAccounts",
-      "apiVersion": "2023-05-01",
-      "name": "[variables('storageAccountName')]",
-      "location": "[variables('primaryLocation')]",
-      "tags": "[parameters('tags')]",
-      "sku": {
-        "name": "Standard_LRS"
-      },
-      "kind": "StorageV2",
-      "properties": {
-        "allowBlobPublicAccess": false,
-        "minimumTlsVersion": "TLS1_2",
-        "supportsHttpsTrafficOnly": true
-      }
-    },
-    {
-      "condition": "[parameters('deploySampleData')]",
-      "type": "Microsoft.Storage/storageAccounts/blobServices",
-      "apiVersion": "2023-05-01",
-      "name": "[format('{0}/{1}', variables('storageAccountName'), 'default')]",
-      "dependsOn": [
-        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
-      ]
-    },
-    {
-      "condition": "[parameters('deploySampleData')]",
-      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
-      "apiVersion": "2023-05-01",
-      "name": "[format('{0}/{1}/{2}', variables('storageAccountName'), 'default', variables('sampleContainerName'))]",
-      "properties": {
-        "publicAccess": "None"
-      },
-      "dependsOn": [
-        "[resourceId('Microsoft.Storage/storageAccounts/blobServices', variables('storageAccountName'), 'default')]"
-      ]
-    }
   ],
   "outputs": {
     "searchServiceName": {
@@ -493,14 +445,6 @@
     "privateDnsZoneId": {
       "type": "string",
       "value": "[resourceId('Microsoft.Network/privateDnsZones', variables('privateDnsZone'))]"
-    },
-    "sampleStorageAccountName": {
-      "type": "string",
-      "value": "[if(parameters('deploySampleData'), variables('storageAccountName'), '')]"
-    },
-    "sampleContainerName": {
-      "type": "string",
-      "value": "[if(parameters('deploySampleData'), variables('sampleContainerName'), '')]"
     }
   }
 }

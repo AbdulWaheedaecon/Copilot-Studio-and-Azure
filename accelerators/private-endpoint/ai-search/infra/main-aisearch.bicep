@@ -83,9 +83,6 @@ param existingSecondaryVnetId string = ''
 @description('Name of the existing PP-delegated subnet in the secondary VNet. Used only when provisionVnet=false and the PP geo is multi-region.')
 param existingSecondaryPpSubnetName string = 'snet-powerplatform'
 
-@description('Deploy a storage account with sample health-plan PDFs and create an index/indexer. Requires running scripts/load-sample-data.ps1 after deployment.')
-param deploySampleData bool = false
-
 @description('Tags applied to all provisioned resources.')
 param tags object = {
   workload: 'aisearch-pe'
@@ -339,39 +336,6 @@ resource enterprisePolicy 'Microsoft.PowerPlatform/enterprisePolicies@2020-10-30
 }
 
 // ---------------------------------------------------------------------------
-// Sample Data — Storage Account + blob container (conditional)
-// Used by scripts/load-sample-data.ps1 to host PDFs for indexing.
-// ---------------------------------------------------------------------------
-var storageAccountName = 'st${baseName}${uniqueString(resourceGroup().id)}'
-var sampleContainerName = 'health-plan-pdfs'
-
-resource sampleStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = if (deploySampleData) {
-  name: storageAccountName
-  location: primaryLocation
-  tags: tags
-  sku: { name: 'Standard_LRS' }
-  kind: 'StorageV2'
-  properties: {
-    allowBlobPublicAccess: false
-    minimumTlsVersion: 'TLS1_2'
-    supportsHttpsTrafficOnly: true
-  }
-}
-
-resource sampleBlobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = if (deploySampleData) {
-  name: 'default'
-  parent: sampleStorage
-}
-
-resource sampleContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = if (deploySampleData) {
-  name: sampleContainerName
-  parent: sampleBlobService
-  properties: {
-    publicAccess: 'None'
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Outputs (consumed by deploy + connector scripts)
 // ---------------------------------------------------------------------------
 output searchServiceName string = provisionAiSearch
@@ -386,5 +350,3 @@ output ppSubnetSecondaryResourceId string = isSingleRegionGeo ? '' : '${resolved
 output vnetId                    string = resolvedVnetId
 output peSubnetResourceId        string = '${resolvedVnetId}/subnets/${resolvedPeSubnetName}'
 output privateDnsZoneId          string = dnsZone.id
-output sampleStorageAccountName  string = deploySampleData ? sampleStorage.name : ''
-output sampleContainerName       string = deploySampleData ? sampleContainerName : ''
