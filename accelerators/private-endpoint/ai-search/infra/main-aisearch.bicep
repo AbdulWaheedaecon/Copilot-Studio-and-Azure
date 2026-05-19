@@ -336,7 +336,7 @@ resource enterprisePolicy 'Microsoft.PowerPlatform/enterprisePolicies@2020-10-30
 }
 
 // ---------------------------------------------------------------------------
-// Outputs (consumed by deploy + connector scripts)
+// Outputs (consumed by downstream scripts)
 // ---------------------------------------------------------------------------
 output searchServiceName string = provisionAiSearch
   ? searchService.name

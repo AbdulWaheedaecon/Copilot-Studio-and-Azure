@@ -140,7 +140,7 @@ Write-Host "    AI Search endpoint: $searchEndpoint"
 Write-Host "    Enterprise policy:  $policyId"
 
 # ---------------------------------------------------------------------------
-# Persist outputs for connector + test scripts
+# Persist outputs for downstream scripts
 # ---------------------------------------------------------------------------
 $outFile = Join-Path $PSScriptRoot 'deployment-outputs-aisearch.json'
 @{

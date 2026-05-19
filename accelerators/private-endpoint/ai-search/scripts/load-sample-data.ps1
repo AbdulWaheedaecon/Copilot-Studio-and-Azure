@@ -606,7 +606,7 @@ if ($useVectors) {
   Write-Host "Sample data loaded. Index '$IndexName' is ready (keyword search only)." -ForegroundColor Green
   Write-Host "Re-run with -OpenAIEndpoint and -OpenAIApiKey to add integrated vectorization for Copilot Studio." -ForegroundColor Yellow
 }
-Write-Host "You can test from the custom connector with: search=health AND indexName=$IndexName" -ForegroundColor Green
+Write-Host "You can test in Copilot Studio or Search Explorer with: search=health AND indexName=$IndexName" -ForegroundColor Green
 Write-Host ""
 Write-Host "NOTE: Firewall rule changes take 1-3 minutes to propagate." -ForegroundColor Yellow
 Write-Host "      If the Azure portal shows 403 when browsing indexes, wait a moment and refresh." -ForegroundColor Yellow

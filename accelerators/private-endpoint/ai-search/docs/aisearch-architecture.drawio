@@ -15,24 +15,9 @@
           <mxGeometry x="50" y="60" width="260" height="720" as="geometry" />
         </mxCell>
 
-        <!-- Power Apps icon -->
-        <mxCell id="powerApps" value="Power Apps" style="shape=image;verticalLabelPosition=bottom;verticalAlign=top;html=1;image=img/lib/mscae/PowerApps.svg;fillColor=#742774;strokeColor=none;fontSize=11;" vertex="1" parent="1">
-          <mxGeometry x="100" y="150" width="60" height="60" as="geometry" />
-        </mxCell>
-
-        <!-- Power Automate icon -->
-        <mxCell id="powerAutomate" value="Power Automate" style="shape=image;verticalLabelPosition=bottom;verticalAlign=top;html=1;image=img/lib/mscae/LogicApps.svg;fillColor=#0066FF;strokeColor=none;fontSize=11;" vertex="1" parent="1">
-          <mxGeometry x="100" y="380" width="60" height="60" as="geometry" />
-        </mxCell>
-
         <!-- Copilot Studio icon -->
         <mxCell id="copilotStudio" value="Copilot Studio" style="shape=image;verticalLabelPosition=bottom;verticalAlign=top;html=1;image=img/lib/mscae/CopilotService.svg;fillColor=#5E35B1;strokeColor=none;fontSize=11;" vertex="1" parent="1">
-          <mxGeometry x="100" y="570" width="60" height="60" as="geometry" />
-        </mxCell>
-
-        <!-- Custom connector box at the PP boundary -->
-        <mxCell id="connector" value="Custom Connector&#xa;(Azure AI Search Private)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1B5E20;strokeColor=#004D00;fontColor=#FFFFFF;fontSize=10;fontStyle=1;align=center;" vertex="1" parent="1">
-          <mxGeometry x="295" y="370" width="140" height="60" as="geometry" />
+          <mxGeometry x="100" y="370" width="60" height="60" as="geometry" />
         </mxCell>
 
         <!-- ============ Azure main box ============ -->
@@ -131,24 +116,13 @@
 
         <!-- ============ Connections / data flow ============ -->
 
-        <!-- Power Apps / Automate / Copilot Studio → Custom Connector -->
-        <mxCell id="e1" style="endArrow=classic;html=1;strokeColor=#5E35B1;strokeWidth=2;" edge="1" parent="1" source="powerApps" target="connector">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="e2" style="endArrow=classic;html=1;strokeColor=#5E35B1;strokeWidth=2;" edge="1" parent="1" source="powerAutomate" target="connector">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="e3" style="endArrow=classic;html=1;strokeColor=#5E35B1;strokeWidth=2;" edge="1" parent="1" source="copilotStudio" target="connector">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-
-        <!-- Custom Connector → snet-powerplatform (via Enterprise Policy / VNet injection) -->
-        <mxCell id="e4" value="subnet injection&#xa;(Microsoft backbone)" style="endArrow=classic;html=1;strokeColor=#1B5E20;strokeWidth=3;fontSize=9;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="connector" target="snetPP1">
+        <!-- Copilot Studio → snet-powerplatform (via Enterprise Policy / VNet injection) -->
+        <mxCell id="e4" value="VNet injection&#xa;(Microsoft backbone)" style="endArrow=classic;html=1;strokeColor=#1B5E20;strokeWidth=3;fontSize=9;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="copilotStudio" target="snetPP1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
 
         <!-- Failover path to secondary subnet -->
-        <mxCell id="e5" value="failover" style="endArrow=classic;html=1;strokeColor=#1B5E20;strokeWidth=2;dashed=1;fontSize=9;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="connector" target="snetPP2">
+        <mxCell id="e5" value="failover" style="endArrow=classic;html=1;strokeColor=#1B5E20;strokeWidth=2;dashed=1;fontSize=9;labelBackgroundColor=#FFFFFF;" edge="1" parent="1" source="copilotStudio" target="snetPP2">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
 
@@ -180,7 +154,7 @@
           <mxGeometry x="950" y="140" width="240" height="40" as="geometry" />
         </mxCell>
 
-        <mxCell id="ppNote" value="✅ Power Platform calls route via&#xa;delegated subnet → PE on Microsoft backbone" style="text;html=1;align=center;strokeColor=#2E7D32;fillColor=#E8F5E9;rounded=1;fontSize=9;" vertex="1" parent="1">
+        <mxCell id="ppNote" value="&#x2705; Copilot Studio calls route via&#xa;delegated subnet &#x2192; PE on Microsoft backbone" style="text;html=1;align=center;strokeColor=#2E7D32;fillColor=#E8F5E9;rounded=1;fontSize=9;" vertex="1" parent="1">
           <mxGeometry x="295" y="450" width="155" height="50" as="geometry" />
         </mxCell>
 

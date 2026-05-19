@@ -1,28 +1,26 @@
-# Azure AI Search behind Private Endpoint + Power Platform
+# Azure AI Search behind Private Endpoint + Copilot Studio
 
 ## Objective
 
-Provide an end-to-end accelerator for hosting **Azure AI Search** behind a **Private Endpoint** (no public network access) and querying it from a **Power Platform Managed Environment** via [Enterprise Policy / VNet
+Provide an end-to-end accelerator for hosting **Azure AI Search** behind a **Private Endpoint** (no public network access) and querying it from **Copilot Studio** in a **Power Platform Managed Environment** via [Enterprise Policy / VNet
 injection](https://learn.microsoft.com/power-platform/admin/vnet-support-setup-configure).
 
 > **Why not just use `bypass=AzureServices`?** Power Platform is not on the
 > trusted-services list for Azure AI Search. `networkRuleSet.bypass` only covers
 > services like Azure Machine Learning and Azure Cognitive Services indexers —
-> not Power Automate or Power Apps runtime calls. A Power Platform Enterprise
+> not Copilot Studio runtime calls. A Power Platform Enterprise
 > Policy linked to a delegated subnet is the supported bridge.
 
 What you get when you finish the steps below:
 
-* `Microsoft.Search/searchServices` with `publicNetworkAccess=Disabled`, optional   system-assigned identity, and a Private Endpoint into a dedicated subnet.
+* `Microsoft.Search/searchServices` with `publicNetworkAccess=Disabled`, optional system-assigned identity, and a Private Endpoint into a dedicated subnet.
 * One Private DNS zone linked to the primary VNet:
   `privatelink.search.windows.net`.
 * Two delegated subnets in [paired Azure regions for Power Platform](https://learn.microsoft.com/power-platform/admin/vnet-support-overview#supported-regions) VNet
   injection (multi-region PP geos like `unitedstates` require subnets in two regions).
 * `Microsoft.PowerPlatform/enterprisePolicies` (kind `NetworkInjection`)
   referencing both delegated subnets, linked to your Managed PP environment.
-* A Power Platform **custom connector** for the AI Search query REST API (search
-  documents, get document, list indexes) that routes through the private endpoint
-  when called from a Power Automate flow in the linked environment.
+* Copilot Studio connected to Azure AI Search via VNet injection over the Microsoft backbone — no public internet exposure.
 
 ## Architecture
 
@@ -39,7 +37,6 @@ The architecture diagram source is at [docs/aisearch-architecture.drawio](docs/a
 | [Azure subscription](https://azure.microsoft.com/free/) Owner / Contributor | RG, networking, AI Search, PE, DNS, Enterprise Policy |
 | [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) ≥ `2.50` | Only required for scripted path |
 | [PowerShell 7+](https://learn.microsoft.com/powershell/scripting/install/installing-powershell) (`pwsh`) | For helper scripts |
-| [`pac` CLI](https://learn.microsoft.com/power-platform/developer/cli/introduction#install-microsoft-power-platform-cli) signed in to target PP environment | `pac auth list` |
 | [`Microsoft.PowerPlatform.EnterprisePolicies` PowerShell module](https://www.powershellgallery.com/packages/Microsoft.PowerPlatform.EnterprisePolicies) | Auto-installed by `link-enterprise-policy.ps1` |
 | [Power Platform / Global Administrator](https://learn.microsoft.com/power-platform/admin/use-service-admin-role-manage-tenant) | Required to enable Managed Environment + link the policy |
 | Target environment is a [**Managed Environment**](https://learn.microsoft.com/power-platform/admin/managed-environment-overview) | Sandbox is not allowed; enable in PPAC |
@@ -217,59 +214,26 @@ To unlink later:
 
 ## Testing
 
-### 1. Sign `pac` in to the target Power Platform environment
-
-```powershell
-pac auth create --environment <environmentName>
-```
-
-Verify with `pac auth list` — the `*` marker should be on the target environment row.
-
-### 2. Push the custom connector and run the connectivity check
-
-```powershell
-./scripts/create-and-test-aisearch-connector.ps1 -ResourceGroup <your-rg-name>
-```
-
-The script:
-1. Resolves the deployed AI Search account name and endpoint from the resource group (or from `scripts/deployment-outputs-aisearch.json` if you used the scripted path).
-2. Patches the swagger `host` field with the real search service hostname.
-3. Pushes the connector via `pac connector create`.
-4. Runs a connectivity test — `GET /indexes?api-version=2024-07-01` — against the search endpoint.
+### 1. Verify private connectivity
 
 | Run from | Expected | Meaning |
 |---|---|---|
-| Your laptop (public internet) | `403 Forbidden` or `401` | ✅ Public access is disabled |
-| VM inside `snet-pe` (`-InsideVnetTest`) | `200 OK` | ✅ Private endpoint + DNS working |
-| Power Automate flow in linked env | `200 OK` | ✅ End-to-end PP → PE working |
+| Your laptop (public internet) | `403 Forbidden` or timeout | ✅ Public access is disabled |
+| VM inside `snet-pe` | `200 OK` | ✅ Private endpoint + DNS working |
+| Copilot Studio in linked env | Search results returned | ✅ End-to-end PP → PE working |
 
-> The **Test operation** button in the custom connector designer routes through
-> the connector authoring host and **does not use VNet injection**. Always
-> validate from a real flow run.
-
-### 3. End-to-end test from a Power Automate flow or Copilot Studio
-
-#### Option A — Power Automate flow
-
-1. In the linked PP environment, create a flow with an **Instant** trigger.
-2. Add an action from the custom connector — **Search Documents**.
-3. Create a new connection — supply the query API key.
-4. Fill in `indexName` and a `search` value (e.g. `*`).
-5. Run the flow. A `200` response confirms **Power Platform → delegated subnet → Private Endpoint → AI Search** is fully wired.
-
-#### Option B — Copilot Studio
+### 2. End-to-end test from Copilot Studio
 
 1. Open [Copilot Studio](https://copilotstudio.microsoft.com/) in the same linked Managed Environment.
 2. Create or open an existing agent (copilot).
-3. Go to **Tools** (left nav) → **+ Add a tool** → search for your AI Search custom connector name.
-4. Select the **Search Documents** action and add it to the agent.
-5. In the **Test your agent** pane, send a message that triggers the search (e.g. _"Search for documents about pricing"_).
-6. The agent should invoke the connector action and return results from your AI Search index — confirming private connectivity works end-to-end from Copilot Studio through the VNet.
+3. Go to **Knowledge** → **+ Add knowledge** → **Azure AI Search**.
+4. Provide the search service endpoint (`https://<name>.search.windows.net`) and authentication details.
+5. In the **Test your agent** pane, send a message that triggers a search (e.g. _"What are the PerksPlus benefits?"_).
+6. The agent should return results from your AI Search index — confirming private connectivity works end-to-end from Copilot Studio through the VNet.
 
-> **Note:** Copilot Studio uses the same VNet injection path as Power Automate
-> when the environment is linked to an Enterprise Policy. If the flow test
-> works but Copilot Studio does not, verify the connector is in a Dataverse
-> solution visible to the agent's environment.
+> **Note:** Copilot Studio connects directly to Azure AI Search via VNet
+> injection when the environment is linked to an Enterprise Policy. No custom
+> connector is required.
 
 ### 4. Verify the Enterprise Policy link
 
@@ -288,33 +252,15 @@ if (-not $ppEnv.properties.PSObject.Properties['enterprisePolicies']) {
 
 Look for `"linkStatus": "Linked"` in the `vNets` object.
 
-## Connector Operations
-
-The custom connector exposes the following AI Search data-plane operations. All
-calls are authenticated with a **query API key** (`api-key` header — read-only,
-cannot mutate indexes or documents).
-
-| Operation | Method | Path | Description |
-|---|---|---|---|
-| **ListIndexes** | GET | `/indexes` | Returns all indexes in the search service |
-| **SearchDocuments** | POST | `/indexes/{indexName}/docs/search.post.search` | Full-featured search: text, vectors, filters, facets, highlight |
-| **GetDocument** | GET | `/indexes/{indexName}/docs/{key}` | Retrieves a single document by its key field |
-| **CountDocuments** | GET | `/indexes/{indexName}/docs/$count` | Returns the total document count for an index |
-
-> To call management operations (create/update/delete indexes), use an **admin
-> key** and add the operations to the connector swagger. Admin keys should be
-> stored in Key Vault and fetched via a Managed Identity connection, not embedded
-> in connector connection parameters.
 
 ## Troubleshooting
 
 | Symptom | Likely cause / fix |
 |---|---|
-| Power Automate flow returns `403` | Enterprise Policy not linked yet. Verify with the BAP API snippet above and run `link-enterprise-policy.ps1`. |
+| Copilot Studio returns `403` | Enterprise Policy not linked yet. Verify with the BAP API snippet above and run `link-enterprise-policy.ps1`. |
 | `404` from `enterprisePolicies/vnet/link` | Environment is not a Managed Environment. Enable it in PPAC, then re-run the link script. |
 | `Environment location 'unitedstates' does not match enterprise policy location 'westus'` | The Enterprise Policy `location` must be the PP geo string (`unitedstates`), not an Azure region. Redeploy using the provided template which handles this automatically. |
 | `EnterprisePolicyUpdateNotAllowed` on redeploy | The policy is currently linked. Unlink first (`-Unlink`), redeploy, then re-link. |
-| Custom connector test from designer returns `403` | Expected — designer test doesn't use VNet injection. Validate from a real flow run. |
 | `400 Bad Request` from SearchDocuments | Check `api-version` parameter and request body schema. Minimum body: `{"search": "*"}`. |
 | AI Search returns `401 Unauthorized` | Wrong key type — use the **query key** for search operations, not the admin key. |
 | Private endpoint status shows `Pending` | If using an existing search service (`provisionAiSearch=false`), the PE connection may need approval. Go to the search service → Networking → Private endpoint connections and approve. |
@@ -423,10 +369,10 @@ The script:
 
 ### Testing with sample data
 
-Once indexed, you can search the health-plan documents from your custom connector:
+Once indexed, you can search the health-plan documents from Copilot Studio or the Azure portal Search Explorer:
 
-- **Power Automate flow:** Use the **Search Documents** action with `indexName=health-plan-index` and `search=benefits`.
-- **Copilot Studio:** Ask the agent a question like _"What are the PerksPlus benefits?"_ — it will call the Search Documents action and return results from the indexed PDFs.
+- **Copilot Studio:** Ask the agent a question like _"What are the PerksPlus benefits?"_ — it will search the index and return results from the indexed PDFs.
+- **Search Explorer:** In the Azure portal, open the search service → Indexes → `health-plan-index` → Search Explorer. Enter a query like `benefits` to verify documents are indexed.
 
 ## Appendix
 
@@ -439,13 +385,9 @@ ai-search/
   infra/
     main-aisearch.bicep                       # Bicep source template
     azuredeploy-aisearch.json                 # compiled ARM — used by Deploy to Azure button
-  powerplatform/
-    aisearch-connector.swagger.json           # OpenAPI 2.0 source (host is a placeholder)
-    apiProperties-aisearch.json               # connection params / branding
   scripts/
     deploy-aisearch.ps1                       # provision Azure infra from .env
     load-sample-data.ps1                      # download PDFs + create index/indexer (optional)
-    create-and-test-aisearch-connector.ps1    # pac connector create + connectivity test
   docs/
     aisearch-architecture.drawio              # editable architecture diagram
 ```
@@ -468,5 +410,5 @@ ai-search/
 | Private DNS zone | `privatelink.cognitiveservices.azure.com` (+ 2 others) | `privatelink.search.windows.net` |
 | PE group ID | `account` | `searchService` |
 | Auth | `Ocp-Apim-Subscription-Key` header | `api-key` header (query key or admin key) |
-| Connector operations | Analyzers, AnalyzeContent | ListIndexes, SearchDocuments, GetDocument, CountDocuments |
+| Copilot Studio integration | Custom connector required | Direct knowledge source (no connector needed) |
 | SKU restriction | S0 only (Content Understanding) | Basic or above for PE |
