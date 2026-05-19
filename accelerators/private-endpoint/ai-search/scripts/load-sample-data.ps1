@@ -159,18 +159,46 @@ if ($SkipVectorization) {
     --query name -o tsv 2>$null
   if (-not $existingDeployment) {
     Write-Host "    Deployment not found -- creating '$OpenAIEmbeddingDeployment'" -ForegroundColor Yellow
-    az cognitiveservices account deployment create `
-      --name $openAIAccountName `
-      --resource-group $ResourceGroup `
-      --deployment-name $OpenAIEmbeddingDeployment `
-      --model-name $OpenAIModelName `
-      --model-version "1" `
-      --model-format OpenAI `
-      --scale-settings-capacity 120 `
-      --scale-settings-scale-type "Standard" `
-      --only-show-errors | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Failed to deploy model '$OpenAIModelName'." }
-    Write-Host "    Model deployment '$OpenAIEmbeddingDeployment' created." -ForegroundColor Green
+    # Use ARM REST API directly because the CLI may not support GlobalStandard sku
+    $subId = az account show --query id -o tsv
+    $deployToken = az account get-access-token --resource 'https://management.azure.com/' --query accessToken -o tsv
+    $deployUri = "https://management.azure.com/subscriptions/$subId/resourceGroups/$ResourceGroup/providers/Microsoft.CognitiveServices/accounts/$openAIAccountName/deployments/$OpenAIEmbeddingDeployment`?api-version=2024-06-01-preview"
+    $deployBody = @{
+      sku = @{ name = 'GlobalStandard'; capacity = 120 }
+      properties = @{
+        model = @{
+          format  = 'OpenAI'
+          name    = $OpenAIModelName
+          version = '1'
+        }
+      }
+    } | ConvertTo-Json -Depth 5
+    $deployHeaders = @{ 'Authorization' = "Bearer $deployToken"; 'Content-Type' = 'application/json' }
+    try {
+      $deployResp = Invoke-RestMethod -Method PUT -Uri $deployUri -Headers $deployHeaders -Body $deployBody
+      Write-Host "    Model deployment '$OpenAIEmbeddingDeployment' created (state: $($deployResp.properties.provisioningState))." -ForegroundColor Green
+    } catch {
+      throw "Failed to deploy model '$OpenAIModelName': $($_.Exception.Message)"
+    }
+
+    # Wait for deployment to become ready
+    if ($deployResp.properties.provisioningState -ne 'Succeeded') {
+      Write-Host "    Waiting for deployment to reach 'Succeeded' state..." -ForegroundColor Yellow
+      $deployWait = 0
+      $deployMaxWait = 120
+      do {
+        Start-Sleep -Seconds 10
+        $deployWait += 10
+        $provState = az cognitiveservices account deployment show `
+          -n $openAIAccountName -g $ResourceGroup `
+          --deployment-name $OpenAIEmbeddingDeployment `
+          --query "properties.provisioningState" -o tsv 2>$null
+        Write-Host "      provisioning state: $provState ($deployWait s)"
+      } while ($provState -ne 'Succeeded' -and $deployWait -lt $deployMaxWait)
+      if ($provState -ne 'Succeeded') {
+        Write-Warning "Deployment did not reach 'Succeeded' within $deployMaxWait s (current: $provState). Vectorization may fail."
+      }
+    }
   } else {
     Write-Host "    Deployment '$OpenAIEmbeddingDeployment' already exists."
   }
@@ -339,7 +367,8 @@ function Invoke-SearchRest {
 Write-Host "==> Creating search index '$IndexName'" -ForegroundColor Cyan
 
 $indexFields = @(
-  @{ name = 'id';        type = 'Edm.String'; searchable = $false; filterable = $true;  sortable = $false; facetable = $false; key = $true;  retrievable = $true }
+  @{ name = 'id';        type = 'Edm.String'; searchable = $true;  filterable = $true;  sortable = $false; facetable = $false; key = $true;  retrievable = $true; analyzer = 'keyword' }
+  @{ name = 'parent_id'; type = 'Edm.String'; searchable = $false; filterable = $true;  sortable = $false; facetable = $false; key = $false; retrievable = $true }
   @{ name = 'title';     type = 'Edm.String'; searchable = $true;  filterable = $false; sortable = $false; facetable = $false; key = $false; retrievable = $true;  analyzer = 'standard.lucene' }
   @{ name = 'sourceUrl'; type = 'Edm.String'; searchable = $false; filterable = $false; sortable = $false; facetable = $false; key = $false; retrievable = $true }
   @{ name = 'content';   type = 'Edm.String'; searchable = $true;  filterable = $false; sortable = $false; facetable = $false; key = $false; retrievable = $true;  analyzer = 'standard.lucene' }
@@ -391,23 +420,51 @@ Write-Host "    index created: $($resp.name)"
 # 5a. Create skillset (only when vectorization is enabled)
 # ---------------------------------------------------------------------------
 if ($useVectors) {
-  Write-Host "==> Creating skillset 'ss-health-plan' (AzureOpenAI embedding)" -ForegroundColor Cyan
+  Write-Host "==> Creating skillset 'ss-health-plan' (split + AzureOpenAI embedding)" -ForegroundColor Cyan
   $skillsetDef = @{
     name   = 'ss-health-plan'
     skills = @(
       @{
+        '@odata.type'     = '#Microsoft.Skills.Text.SplitSkill'
+        name              = 'hp-split-skill'
+        context           = '/document'
+        textSplitMode     = 'pages'
+        maximumPageLength  = 2000
+        pageOverlapLength  = 500
+        inputs            = @( @{ name = 'text'; source = '/document/content' } )
+        outputs           = @( @{ name = 'textItems'; targetName = 'pages' } )
+      }
+      @{
         '@odata.type' = '#Microsoft.Skills.Text.AzureOpenAIEmbeddingSkill'
         name          = 'hp-embedding-skill'
-        context       = '/document'
+        context       = '/document/pages/*'
         resourceUri   = $OpenAIEndpoint.TrimEnd('/')
         apiKey        = $OpenAIApiKey
         deploymentId  = $OpenAIEmbeddingDeployment
         modelName     = $OpenAIModelName
         dimensions    = $EmbeddingDimensions
-        inputs        = @( @{ name = 'text'; source = '/document/content' } )
+        inputs        = @( @{ name = 'text'; source = '/document/pages/*' } )
         outputs       = @( @{ name = 'embedding'; targetName = 'contentVector' } )
       }
     )
+    indexProjections = @{
+      selectors = @(
+        @{
+          targetIndexName    = $IndexName
+          parentKeyFieldName = 'parent_id'
+          sourceContext       = '/document/pages/*'
+          mappings           = @(
+            @{ name = 'content';       source = '/document/pages/*' }
+            @{ name = 'contentVector'; source = '/document/pages/*/contentVector' }
+            @{ name = 'title';         source = '/document/metadata_storage_name' }
+            @{ name = 'sourceUrl';     source = '/document/metadata_storage_path' }
+            @{ name = 'type';          source = '/document/metadata_content_type' }
+            @{ name = 'createdAt';     source = '/document/metadata_storage_last_modified' }
+          )
+        }
+      )
+      parameters = @{ projectionMode = 'skipIndexingParentDocuments' }
+    }
   }
   $resp = Invoke-SearchRest -Method PUT `
     -Uri "$searchEndpoint/skillsets/ss-health-plan?api-version=$apiVersion" `
@@ -451,7 +508,15 @@ $indexerDef = @{
       parsingMode   = 'default'
     }
   }
-  fieldMappings = @(
+}
+
+if ($useVectors) {
+  $indexerDef.skillsetName = 'ss-health-plan'
+  # Index projections in the skillset handle all field mappings for chunked output.
+  # No fieldMappings or outputFieldMappings needed — projections map source fields directly.
+} else {
+  # Without vectors: map blob metadata to index fields directly
+  $indexerDef.fieldMappings = @(
     @{
       sourceFieldName = 'metadata_storage_path'
       targetFieldName = 'id'
@@ -473,13 +538,6 @@ $indexerDef = @{
       sourceFieldName = 'metadata_storage_last_modified'
       targetFieldName = 'createdAt'
     }
-  )
-}
-
-if ($useVectors) {
-  $indexerDef.skillsetName = 'ss-health-plan'
-  $indexerDef.outputFieldMappings = @(
-    @{ sourceFieldName = '/document/contentVector'; targetFieldName = 'contentVector' }
   )
 }
 
