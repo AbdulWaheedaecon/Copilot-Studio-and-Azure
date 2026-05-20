@@ -106,7 +106,7 @@ httpx==0.28.1
     # via
     #   jupyterlab
     #   openai
-idna==3.11
+idna==3.15
     # via
     #   anyio
     #   httpx
