@@ -14,6 +14,10 @@ Ensure a comprehensive approach to building your custom Copilot:
 
 The lab highlights the **key decisions and best practices for building a Copilot Studio agent** – from setup and orchestration mode to knowledge integration, entity design, external tools, automation flows, and AI model choice. The **most important choices are presented first**, using a clear hierarchy of bullet points and comparison tables for quick scanning.
 
+## Video Walkthrough
+
+[Video Walkthrough](https://www.youtube.com/watch?v=qLu8c0uaPQ0)
+
 ## Prerequisites
 
 - **Licensing & Environment**: Make sure you have a Copilot Studio tenant license and user license in your Microsoft tenant (tenant license for the org, user license for each builder). Create or use a Power **Platform environment with Dataverse** to host your agent (Copilot Studio uses Dataverse for storage). You’ll need at leat *Environment Maker* security role in that environment to configure the agent, but *System Customizer* role is recommended.
