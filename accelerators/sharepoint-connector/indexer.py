@@ -39,6 +39,7 @@ from multimodal_embeddings_client import MultimodalEmbeddingsClient
 from search_client import SearchPushClient
 from sharepoint_client import SharePointClient, SharePointFile
 from state_store import get_store
+from text_embeddings_client import TextEmbeddingsClient
 
 logger = logging.getLogger(__name__)
 
@@ -117,8 +118,9 @@ def _process_single_file(
     content_path: str | None = None,
     doc_intel: DocIntelligenceClient | None = None,
     image_store: ImageStore | None = None,
+    text_client: TextEmbeddingsClient | None = None,
 ) -> None:
-    """Extract → chunk → embed → push. Unified 1024d vector for every chunk."""
+    """Extract → chunk → embed → push. Unified vector for every chunk."""
     parent_id = _make_parent_id(sp_file.drive_id, sp_file.id)
 
     if _is_fresh(search, parent_id, sp_file.last_modified):
@@ -158,6 +160,12 @@ def _process_single_file(
             stats.record_error(f"No chunks: {sp_file.name}")
             return
 
+        # Phase 0: text-only. Drop image chunks until the image path is built.
+        chunks = [c for c in chunks if not c.is_image]
+        if not chunks:
+            logger.info(f"No text chunks (image-only file) — skipping: {sp_file.name}")
+            return
+
         # --- Embed every chunk through the same multimodal endpoint --------
         # Chunks are vectorised in parallel up to `vectorise_concurrency`.
         # The MultimodalEmbeddingsClient holds its own semaphore so Vision
@@ -165,7 +173,8 @@ def _process_single_file(
         def _vectorise_one(chunk: TextChunk) -> dict[str, Any] | None:
             if chunk.is_image:
                 return _build_image_doc(chunk, parent_id, sp_file, multimodal, image_store)
-            return _build_text_doc(chunk, parent_id, sp_file, multimodal)
+            # Phase 0: only text chunks reach here (images filtered out above).
+            return _build_text_doc(chunk, parent_id, sp_file, text_client)
 
         workers = max(1, min(config.indexer.vectorise_concurrency, len(chunks)))
         if workers == 1:
@@ -230,11 +239,11 @@ def _build_text_doc(
     chunk: TextChunk,
     parent_id: str,
     sp_file: SharePointFile,
-    multimodal: MultimodalEmbeddingsClient,
+    text_client: TextEmbeddingsClient,
 ) -> dict[str, Any] | None:
-    vector = multimodal.vectorize_text(chunk.text)
+    vector = text_client.embed(chunk.text)
     if vector is None:
-        logger.warning(f"Skipping text chunk {chunk.chunk_id}: vectorizeText returned None")
+        logger.warning(f"Skipping text chunk {chunk.chunk_id}: embedding returned None")
         return None
     doc = _common_fields(chunk, parent_id, sp_file)
     doc.update({
@@ -395,6 +404,11 @@ def run_indexer(config: AppConfig | None = None) -> IndexerStats:
         endpoint=config.multimodal.endpoint,
         model_version=config.multimodal.model_version,
     )
+    text_client = TextEmbeddingsClient(
+        endpoint=os.getenv("AOAI_ENDPOINT", ""),
+        deployment=os.getenv("AOAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-large"),
+        api_version=os.getenv("AOAI_API_VERSION", "2024-02-01"),
+    )
     doc_intel = DocIntelligenceClient(config.docintel) if config.docintel.enabled else None
     image_store: ImageStore | None = None
     try:
@@ -477,6 +491,7 @@ def run_indexer(config: AppConfig | None = None) -> IndexerStats:
                     stats,
                     doc_intel=doc_intel,
                     image_store=image_store,
+                    text_client=text_client,
                 )
             except Exception as e:  # noqa: BLE001
                 logger.error(f"Error processing {item.get('name', 'unknown')}: {e}")
@@ -547,6 +562,7 @@ def run_indexer(config: AppConfig | None = None) -> IndexerStats:
         sp_client.close()
         search.close()
         multimodal.close()
+        text_client.close()
         if doc_intel is not None:
             doc_intel.close()
         if image_store is not None:
@@ -561,13 +577,14 @@ _client_pool_lock = threading.Lock()
 _sp_client: SharePointClient | None = None
 _search_client: SearchPushClient | None = None
 _multimodal_client: MultimodalEmbeddingsClient | None = None
+_text_client: TextEmbeddingsClient | None = None
 _doc_intel_client: DocIntelligenceClient | None = None
 _image_store: ImageStore | None = None
 
 
 def _get_worker_clients(cfg: AppConfig):
     """Build or return pooled per-worker clients."""
-    global _sp_client, _search_client, _multimodal_client, _doc_intel_client, _image_store
+    global _sp_client, _search_client, _multimodal_client, _text_client, _doc_intel_client, _image_store
     with _client_pool_lock:
         if _sp_client is None:
             _sp_client = SharePointClient(cfg.entra, cfg.sharepoint)
@@ -578,6 +595,12 @@ def _get_worker_clients(cfg: AppConfig):
                 endpoint=cfg.multimodal.endpoint,
                 model_version=cfg.multimodal.model_version,
             )
+        if _text_client is None:
+            _text_client = TextEmbeddingsClient(
+                endpoint=os.getenv("AOAI_ENDPOINT", ""),
+                deployment=os.getenv("AOAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-large"),
+                api_version=os.getenv("AOAI_API_VERSION", "2024-02-01"),
+            )
         if _doc_intel_client is None and cfg.docintel.enabled:
             _doc_intel_client = DocIntelligenceClient(cfg.docintel)
         if _image_store is None:
@@ -585,13 +608,13 @@ def _get_worker_clients(cfg: AppConfig):
                 _image_store = ImageStore(container=cfg.multimodal.images_container)
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"ImageStore init failed: {e}")
-    return (_sp_client, _search_client, _multimodal_client, _doc_intel_client, _image_store)
+    return (_sp_client, _search_client, _multimodal_client, _text_client, _doc_intel_client, _image_store)
 
 
 def process_single_message(payload: dict[str, Any]) -> None:
     """Process one queue message: download + index a single file."""
     cfg = load_config()
-    sp, search, multimodal, doc_intel, image_store = _get_worker_clients(cfg)
+    sp, search, multimodal, text_client, doc_intel, image_store = _get_worker_clients(cfg)
 
     drive_id = payload["drive_id"]
     item_id = payload["item_id"]
@@ -652,6 +675,7 @@ def process_single_message(payload: dict[str, Any]) -> None:
             content_path=tmp_path,
             doc_intel=doc_intel,
             image_store=image_store,
+            text_client=text_client,
         )
         logger.info(stats.summary())
     finally:
