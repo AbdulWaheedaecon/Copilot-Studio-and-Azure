@@ -504,6 +504,7 @@ def extract_blocks(
     filename: str,
     *,
     doc_intel=None,                 # DocIntelligenceClient | None
+    extract_images: bool = True,
 ) -> list[Block]:
     """Return an ordered list of Blocks extracted from the file at `path`.
 
@@ -537,7 +538,7 @@ def extract_blocks(
     if doc_intel is not None and getattr(doc_intel, "enabled", False):
         from doc_intelligence_client import LAYOUT_SUPPORTED_EXTS
         if ext in LAYOUT_SUPPORTED_EXTS:
-            blocks = doc_intel.extract_blocks(path, ext)
+            blocks = doc_intel.extract_blocks(path, ext, extract_images=extract_images)
             if blocks:
                 return blocks
             # DocIntel returned nothing (e.g. service error) — fall through.

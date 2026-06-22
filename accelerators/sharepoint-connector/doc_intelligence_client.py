@@ -72,7 +72,7 @@ class DocIntelligenceClient:
 
     # ------------------------------------------------------------------ #
 
-    def extract_blocks(self, file_path: str, ext: str) -> list[Block]:
+    def extract_blocks(self, file_path: str, ext: str, *, extract_images: bool = True) -> list[Block]:
         """Run Layout on a file path and convert the result into Blocks.
 
         Empty list if the extension is unsupported or the service fails.
@@ -85,13 +85,18 @@ class DocIntelligenceClient:
         try:
             client = self._lazy_client()
             content_type = _CONTENT_TYPE_BY_EXT.get(ext.lower(), "application/octet-stream")
+            # Only ask Document Intelligence to crop figures when we actually want
+            # images. For figure-dense files (drawing sets) this avoids generating
+            # and downloading thousands of figure crops into memory (OOM).
+            analyze_kwargs: dict = {}
+            if extract_images:
+                analyze_kwargs["output"] = ["figures"]
             with open(file_path, "rb") as f:
                 poller = client.begin_analyze_document(
                     model_id="prebuilt-layout",
                     body=f,
                     content_type=content_type,
-                    # Request figure cropping so the LRO returns embedded image bytes.
-                    output=["figures"],
+                    **analyze_kwargs,
                 )
             result = poller.result()
         except Exception as e:  # noqa: BLE001
@@ -133,7 +138,9 @@ class DocIntelligenceClient:
                 order += 1
 
         # ---- Figures: image blocks with cropped bytes. ----
-        figures = getattr(result, "figures", None) or []
+        # Skipped entirely when extract_images is False — the heavy path:
+        # one HTTP fetch + cropped image bytes held in memory per figure.
+        figures = (getattr(result, "figures", None) or []) if extract_images else []
         for idx, fig in enumerate(figures):
             loc = _first_bounding_region(getattr(fig, "bounding_regions", None))
             caption = ""

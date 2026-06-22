@@ -143,7 +143,11 @@ def _process_single_file(
         cleanup_tmp = effective_path
 
     try:
-        blocks = extract_blocks(effective_path, sp_file.name, doc_intel=doc_intel)
+        blocks = extract_blocks(
+            effective_path, sp_file.name,
+            doc_intel=doc_intel,
+            extract_images=config.indexer.extract_images,
+        )
         if not blocks:
             logger.warning(f"No blocks extracted from {sp_file.name}, skipping")
             stats.record_error(f"No blocks: {sp_file.name}")
