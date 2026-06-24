@@ -144,6 +144,43 @@ class SearchPushClient:
             logger.warning(f"Could not retrieve parent IDs for reconciliation: {e}")
         return parent_ids
 
+    def update_permissions_by_parent(self, parent_id: str, permission_ids: list[str]) -> int:
+        """Refresh ONLY the `permission_ids` field on every chunk of a parent
+        document. A partial mergeOrUpload - the vector and content are left
+        untouched, so this is cheap (no re-embedding). Used by the periodic
+        permission sweep to propagate SharePoint access changes. Returns the
+        number of chunks updated."""
+        client = self._get_search_client()
+        results = client.search(
+            search_text="*",
+            filter=f"parent_id eq '{parent_id}'",
+            select=["chunk_id"],
+        )
+        chunk_ids = [doc["chunk_id"] for doc in results]
+        if not chunk_ids:
+            return 0
+
+        docs = [{"chunk_id": cid, "permission_ids": permission_ids or []} for cid in chunk_ids]
+        updated = 0
+        for i in range(0, len(docs), 500):
+            batch = docs[i: i + 500]
+            for attempt in range(5):
+                try:
+                    result = client.merge_or_upload_documents(documents=batch)
+                    updated += sum(1 for r in result if r.succeeded)
+                    break
+                except HttpResponseError as e:
+                    if e.status_code == 429 or (e.status_code and e.status_code >= 500):
+                        wait = min(2 ** attempt, 30)
+                        logger.warning(f"Permission merge error {e.status_code}. Retrying in {wait}s")
+                        time.sleep(wait)
+                    else:
+                        raise
+            else:
+                raise RuntimeError(f"Permission merge failed after retries for parent '{parent_id}'")
+        logger.info(f"Refreshed permission_ids on {updated} chunks for parent '{parent_id}'")
+        return updated
+
     # -------------------------------------------------------------- #
     # Per-user security trimming — single-vector hybrid query
     # -------------------------------------------------------------- #

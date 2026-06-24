@@ -36,6 +36,7 @@ INDEXER_QUEUE = os.getenv("INDEXER_QUEUE_NAME", "sp-indexer-q")
 POISON_QUEUE = f"{INDEXER_QUEUE}-poison"
 PROCESSING_FLAG = os.getenv("FUNCTION_PROCESSING_MODE", "queue").strip().lower()
 MAX_FAILURES = 5
+PERMISSION_SWEEP_SCHEDULE = os.getenv("PERMISSION_SWEEP_SCHEDULE", "0 30 2 * * *")  # 02:30 UTC daily
 
 # Search endpoint (query-time) — lazy-initialised singletons so a single
 # Function instance reuses JWKS/HTTPX clients across HTTP invocations.
@@ -341,3 +342,22 @@ def _run_backup():
     cfg = load_config()
     backup = IndexBackup(cfg)
     return backup.run()
+
+
+# ---------------------------------------------------------------------------
+# Scheduled permission sweep - refresh permission_ids without re-embedding
+# ---------------------------------------------------------------------------
+
+@app.timer_trigger(schedule=PERMISSION_SWEEP_SCHEDULE, arg_name="timer", run_on_startup=False)
+def sp_permission_sweep(timer: func.TimerRequest) -> None:
+    """Refresh permission_ids on indexed chunks so SharePoint access changes
+    propagate to security trimming - without re-embedding. Runs nightly by
+    default; override the cadence via the PERMISSION_SWEEP_SCHEDULE app setting."""
+    logging.info("Permission sweep timer fired")
+    try:
+        from indexer import run_permission_sweep
+        stats = run_permission_sweep()
+        logging.info(stats.summary())
+    except Exception as e:  # noqa: BLE001
+        logging.error(f"Permission sweep failed: {e}", exc_info=True)
+        raise

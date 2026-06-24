@@ -574,6 +574,77 @@ def run_indexer(config: AppConfig | None = None) -> IndexerStats:
 
 
 # ---------------------------------------------------------------------------
+# Permission sweep - refresh permission_ids without re-embedding
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class PermissionSweepStats:
+    """Stats for a permission-refresh sweep."""
+    files_seen: int = 0
+    files_updated: int = 0
+    chunks_updated: int = 0
+    errors: int = 0
+
+    def summary(self) -> str:
+        return (
+            f"Permission sweep complete: {self.files_seen} files seen, "
+            f"{self.files_updated} updated, {self.chunks_updated} chunks refreshed, "
+            f"{self.errors} errors"
+        )
+
+
+def run_permission_sweep(config: AppConfig | None = None) -> PermissionSweepStats:
+    """Refresh permission_ids on already-indexed chunks WITHOUT re-embedding.
+
+    SharePoint permission-only changes do not bump lastModifiedDateTime, so the
+    normal indexer (which skips fresh files) never re-reads them. This sweep
+    enumerates current files (metadata only - no download), re-fetches each
+    file's permissions, and merges them onto that file's chunks. Cheap: one
+    Graph permissions call + one field-merge per file; no download, no Document
+    Intelligence, no embeddings.
+    """
+    if config is None:
+        config = load_config()
+
+    stats = PermissionSweepStats()
+    sp_client = SharePointClient(config.entra, config.sharepoint)
+    search = SearchPushClient(config.search, config.multimodal)
+    try:
+        items = sp_client.list_all_files(
+            modified_since=None,
+            extensions=config.indexer.indexed_extensions,
+            root_paths=config.indexer.root_paths,
+        )
+        stats.files_seen = len(items)
+        logger.info(f"Permission sweep: {stats.files_seen} files to refresh")
+
+        for item in items:
+            drive_id = item.get("_drive_id", "")
+            item_id = item.get("id", "")
+            if not drive_id or not item_id:
+                continue
+            parent_id = _make_parent_id(drive_id, item_id)
+            try:
+                perms = sp_client.get_item_permissions(drive_id, item_id)
+                updated = search.update_permissions_by_parent(parent_id, perms)
+                if updated:
+                    stats.files_updated += 1
+                    stats.chunks_updated += updated
+            except Exception as e:  # noqa: BLE001
+                stats.errors += 1
+                logger.warning(
+                    f"Permission refresh failed for {item.get('name', item_id)}: {e}"
+                )
+
+        logger.info(stats.summary())
+        return stats
+    finally:
+        sp_client.close()
+        search.close()
+
+
+# ---------------------------------------------------------------------------
 # Queue-mode single-file processor
 # ---------------------------------------------------------------------------
 
